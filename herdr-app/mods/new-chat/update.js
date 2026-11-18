@@ -20,7 +20,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { appHome, closeOverlay, hc, home, notify, openOverlay, props, readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 
-const REPO = "ChmaraX/herdr-chat";
+const REPO = "chlee1001/herdr-chat";
 const RESTART_ALL = "herdr-chat.update.restart"; // a build every chat restarts on (mods/chat/update.js has the same key)
 const LATER = "herdr-chat.update.later"; // a build the person said Later to: no question, the chats' bars stay
 const CHECKED = "herdr-chat.update.checked"; // ms of the last release lookup (or Later)

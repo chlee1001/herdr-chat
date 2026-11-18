@@ -8,7 +8,7 @@ host's TypeScript directly, where a release ships it built and runs on Node
 20. With the Herdr app open:
 
 ```sh
-git clone https://github.com/ChmaraX/herdr-chat
+git clone https://github.com/chlee1001/herdr-chat
 cd herdr-chat
 npm ci
 ./install.sh               # installs this checkout into the running app; again after a change

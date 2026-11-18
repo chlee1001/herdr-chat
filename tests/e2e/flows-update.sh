@@ -123,7 +123,7 @@ if want update-release; then
   step "update-release: a newer release is offered once; Update installs it, then the restart question"
   "$NODE" "$REPO/install/layout.ts" install "$HERDR_APP_HOME" --app "$APP" >>"$LOG" 2>&1 || fail "install/layout.ts install"
   FEED="$BASE/feed"; mkdir -p "$FEED"
-  printf '{"tag_name": "v0.9.0", "html_url": "https://github.com/ChmaraX/herdr-chat/releases/tag/v0.9.0"}' >"$FEED/latest.json"
+  printf '{"tag_name": "v0.9.0", "html_url": "https://github.com/chlee1001/herdr-chat/releases/tag/v0.9.0"}' >"$FEED/latest.json"
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
   (cd "$FEED" && exec python3 -m http.server "$PORT" --bind 127.0.0.1) >>"$LOG" 2>&1 &
   FEED_PID=$!

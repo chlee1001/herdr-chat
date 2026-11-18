@@ -1,8 +1,13 @@
 # herdr-chat
 
-[![CI](https://github.com/ChmaraX/herdr-chat/actions/workflows/ci.yml/badge.svg)](https://github.com/ChmaraX/herdr-chat/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/ChmaraX/herdr-chat)](https://github.com/ChmaraX/herdr-chat/releases/latest)
-[![License](https://img.shields.io/github/license/ChmaraX/herdr-chat)](LICENSE)
+[![CI](https://github.com/chlee1001/herdr-chat/actions/workflows/ci.yml/badge.svg)](https://github.com/chlee1001/herdr-chat/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/chlee1001/herdr-chat)](https://github.com/chlee1001/herdr-chat/releases/latest)
+[![License](https://img.shields.io/github/license/chlee1001/herdr-chat)](LICENSE)
+
+> **A fork of [ChmaraX/herdr-chat](https://github.com/ChmaraX/herdr-chat).**
+> Releases, updates and issues for this fork live at
+> [chlee1001/herdr-chat](https://github.com/chlee1001/herdr-chat). The
+> changelog's older entries link to the upstream repository.
 
 <p align="center">
   <a href="#features">features</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#keys">keys</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
@@ -61,13 +66,13 @@ https://github.com/user-attachments/assets/cefe4c53-19f6-4c3b-8188-f8480f4c2816
 With the Herdr app open:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-chat/main/install.sh | sh -s -- --app
+curl -fsSL https://raw.githubusercontent.com/chlee1001/herdr-chat/main/install.sh | sh -s -- --app
 ```
 
 It downloads the release, checks it, adds its mods, binds ⌘I to the
 launcher where it's free, and points the agents list and the right-click
 menu at the chat. No clone, no npm install. Or ask the agent in your Herdr
-window to "add the mod at github.com/ChmaraX/herdr-chat".
+window to "add the mod at github.com/chlee1001/herdr-chat".
 
 - **Update:** once a day the app looks for a new release and offers it
   (**Update** installs it), or run the same command again. Then it asks to
@@ -148,7 +153,7 @@ another URL with GitHub's release JSON.
 ## Development
 
 ```sh
-git clone https://github.com/ChmaraX/herdr-chat
+git clone https://github.com/chlee1001/herdr-chat
 cd herdr-chat && npm ci            # Node 24: a checkout runs the TypeScript itself
 ./install.sh --app                 # installs this checkout into the running app
 ```
