@@ -1,7 +1,7 @@
 #!/bin/sh
 # herdr-chat's installer, for the Herdr desktop app:
 #
-#   curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-chat/main/install.sh | sh -s -- --app
+#   curl -fsSL https://raw.githubusercontent.com/chlee1001/herdr-chat/main/install.sh | sh -s -- --app
 #   ./install.sh                  in a clone: installs the clone, as it always has
 #
 #   install.sh [--app] [--uninstall] [--version X.Y.Z] [--from FILE|DIR] [options]
@@ -25,7 +25,7 @@
 # release's uninstall, then ~/.local/share/herdr-chat is removed.
 set -eu
 
-repo=ChmaraX/herdr-chat
+repo=chlee1001/herdr-chat
 one_liner="curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh -s --"
 base="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-chat"
 uninstall= version= from= rest=

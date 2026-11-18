@@ -20,7 +20,7 @@ layout and keys, and the `hc` templates, and copying does none of that.
 With the app open, run its installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-chat/main/install.sh | sh -s -- --app
+curl -fsSL https://raw.githubusercontent.com/chlee1001/herdr-chat/main/install.sh | sh -s -- --app
 ```
 
 Tell the person first what it does:

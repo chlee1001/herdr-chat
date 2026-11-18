@@ -8,11 +8,11 @@
   "author": "Adam Chmara",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ChmaraX/herdr-chat.git"
+    "url": "git+https://github.com/chlee1001/herdr-chat.git"
   },
-  "homepage": "https://github.com/ChmaraX/herdr-chat#readme",
+  "homepage": "https://github.com/chlee1001/herdr-chat#readme",
   "bugs": {
-    "url": "https://github.com/ChmaraX/herdr-chat/issues"
+    "url": "https://github.com/chlee1001/herdr-chat/issues"
   },
   "engines": {
     "node": ">=24"
