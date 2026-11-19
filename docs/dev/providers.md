@@ -116,3 +116,19 @@ can subclass `AcpAdapter` and override its protected hooks: `sessionRef` and
 `onPromptOutcome` (retry or handle a prompt), `settleGate` (hold the run open)
 and `onRunSettled`/`onConnectionClosed`. `tests/fake-acp/` is a scripted ACP agent for
 an ACP agent's host tests.
+
+## GJC (ACP)
+
+The GJC provider runs `gjc --mode acp` and requires GJC 0.21.0 or newer.
+It discovers GJC's own session files and waits for idle phase hints after a
+prompt before releasing queued messages. Background runs remain working until
+an idle hint arrives; the agent does not let the chat stop such runs. A busy
+conflict is retried at most three times, then unsent text returns to the
+composer. Model and session management and TUI hand-off are not yet available.
+
+| GJC capability | Support |
+|---|---|
+| steer / follow-up | no / adapter queue |
+| permissions | agent approval choices |
+| model, thinking and session controls | unavailable |
+| TUI hand-off | unavailable |
