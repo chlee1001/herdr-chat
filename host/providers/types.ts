@@ -382,6 +382,7 @@ export type ForkPoint = { id: string; text: string };
 
 export type AdapterOptions = {
   cwd: string;
+  stateDir?: string;
   /** The agent's command (`pi`, `claude`, `codex`, or a test double). */
   command: string;
   /** Extra arguments for the agent (after `--` on the host's command line). */
