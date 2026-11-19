@@ -37,13 +37,32 @@ mkdirSync(tree, { recursive: true });
 
 // Bundled CommonJS (highlight.js) calls require; an ES module has none of its own.
 const banner = { js: "import { createRequire as __herdrChatRequire } from 'node:module'; const require = __herdrChatRequire(import.meta.url);" };
-const common = { bundle: true, platform: "node", format: "esm", target: `node${NODE_MIN}`, banner, logLevel: "warning", legalComments: "none" };
-await build({ ...common, entryPoints: [join(ROOT, "host", "main.ts")], outfile: join(tree, "host", "main.js") });
+const common = { absWorkingDir: ROOT, bundle: true, platform: "node", format: "esm", target: `node${NODE_MIN}`, banner, logLevel: "warning", legalComments: "none" };
+const hostBuild = await build({ ...common, entryPoints: [join(ROOT, "host", "main.ts")], outfile: join(tree, "host", "main.js"), metafile: true });
 // Each install script runs on its own (`node install/keys.js install …`): its
 // `if (import.meta.main)` is true there, and Node < 24 has no import.meta.main.
+const inputs = Object.keys(hostBuild.metafile.inputs);
 for (const f of readdirSync(join(ROOT, "install")).filter((f) => f.endsWith(".ts"))) {
-  await build({ ...common, entryPoints: [join(ROOT, "install", f)], outfile: join(tree, "install", f.replace(/\.ts$/, ".js")), define: { "import.meta.main": "true" } });
+  const result = await build({ ...common, entryPoints: [join(ROOT, "install", f)], outfile: join(tree, "install", f.replace(/\.ts$/, ".js")), define: { "import.meta.main": "true" }, metafile: true });
+  inputs.push(...Object.keys(result.metafile.inputs));
 }
+
+const packages = new Set();
+for (const input of inputs) {
+  const parts = input.split(/[\\/]/);
+  const i = parts.lastIndexOf("node_modules");
+  if (i < 0 || !parts[i + 1]) continue;
+  packages.add(parts.slice(0, i + (parts[i + 1].startsWith("@") ? 3 : 2)).join("/"));
+}
+const notices = [];
+for (const dir of [...packages].sort()) {
+  const absolute = resolve(ROOT, dir);
+  const manifest = JSON.parse(readFileSync(join(absolute, "package.json"), "utf8"));
+  const files = readdirSync(absolute).filter((f) => /^(license|licence|notice)(\..*)?$/i.test(f)).sort();
+  if (!files.some((f) => /^licen[cs]e/i.test(f))) throw new Error(`No license for bundled package ${manifest.name}`);
+  for (const file of files) notices.push(`${manifest.name}@${manifest.version} — ${file}\n\n${readFileSync(join(absolute, file), "utf8").trim()}\n`);
+}
+writeFileSync(join(tree, "THIRD_PARTY_NOTICES"), notices.join("\n"));
 
 // What the Herdr app writes into a mod folder in a clone (and hidden files) isn't shipped.
 const shipped = (src) => !/(^|\/)(\.[^/]*|gpui-kit\.d\.ts|herdr\.d\.ts|jsconfig\.json)$/.test(src);

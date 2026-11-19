@@ -60,17 +60,17 @@ These are refined after the Claude and Codex research.
 
 ### Capabilities (in `ChatState.capabilities`, the mod adapts)
 
-| capability | Pi | Claude Code | Codex |
-|---|---|---|---|
-| `steer`, `followUp` | yes | yes | yes |
-| `thinkingLevels` | off…xhigh | the model's efforts | the model's efforts |
-| `permissions` + `permissionModes` | no (Pi has no approvals) | yes: Ask, Accept edits, Plan, Auto | yes: Ask first, Read only, Auto, Auto-review, Full access, Plan |
-| `extensionUi` (statuses, widgets) | yes | no | no |
-| `compact` / `compactInstructions` | yes / yes | yes / yes | yes / no |
-| `rename`, `fork` | yes | yes | yes |
-| `images` | per model | yes | per model |
-| `cost` | yes | yes | no (tokens only) |
-| `tui` | yes | yes | yes |
+| capability | Pi | Claude Code | Codex | Generic ACP |
+|---|---|---|---|---|
+| `steer`, `followUp` | yes | yes | yes | no, yes (adapter queue) |
+| `thinkingLevels` | off…xhigh | the model's efforts | the model's efforts | none |
+| `permissions` + `permissionModes` | no (Pi has no approvals) | yes: Ask, Accept edits, Plan, Auto | yes: Ask first, Read only, Auto, Auto-review, Full access, Plan | yes, no modes |
+| `extensionUi` (statuses, widgets) | yes | no | no | no |
+| `compact` / `compactInstructions` | yes / yes | yes / yes | yes / no | no / no |
+| `rename`, `fork` | yes | yes | yes | no |
+| `images` | per model | yes | per model | agent capability |
+| `cost` | yes | yes | no (tokens only) | no |
+| `tui` | yes | yes | yes | optional, per spec |
 
 What else differs, from each agent's own mechanism, not from the chat:
 
@@ -95,3 +95,40 @@ What else differs, from each agent's own mechanism, not from the chat:
 1. `host/providers/<id>/`: the adapter (`ProviderAdapter`), its `tools.ts` (ToolMap), a fake agent under `tests/fake-<id>/`, host tests.
 2. Register it in `host/providers/index.ts`, and its name and icon in `herdr-app/mods/chat/util.js` (`PROVIDER_NAMES`, `icons/providers/<id>.svg`).
 3. The launcher's entry (`herdr-app/mods/new-chat/main.js` `CHOICES`), its key name (`install/keys.ts`), its instruction file (`install/instructions.ts`) and `PROVIDERS` in `install/app.sh`.
+
+### Adding an ACP agent
+
+Use `createAcpAgent(spec, opts)` from `host/providers/acp/spec.ts` for an
+agent that implements the Agent Client Protocol over standard I/O. The spec
+provides its id, display name, executable, arguments and environment. Optional
+`clientMeta` supplies initialization metadata and `tui` provides the argv for
+hand-off; `{session}` in a TUI argument is replaced by the session reference.
+Register the resulting adapter as described below; agent settings are
+not a registry. The default adapter stores session pointers in the host state
+directory and resumes them through `session/load`.
+
+The generic ACP adapter queues messages while a turn is running, supports
+permission requests and reports streamed text, thinking, tools and plans. It
+does not advertise model selection, compaction, session management or a TUI
+unless a TUI command is supplied. Agents with additional lifecycle semantics
+can subclass `AcpAdapter` and override its protected hooks: `sessionRef` and
+`sessionIdOf` (session pointers), `clientMeta`, `phaseHint` and `onPhaseHint`,
+`onPromptOutcome` (retry or handle a prompt), `settleGate` (hold the run open)
+and `onRunSettled`/`onConnectionClosed`. `tests/fake-acp/` is a scripted ACP agent for
+an ACP agent's host tests.
+
+## GJC (ACP)
+
+The GJC provider runs `gjc --mode acp` and requires GJC 0.21.0 or newer.
+It discovers GJC's own session files and waits for idle phase hints after a
+prompt before releasing queued messages. Background runs remain working until
+an idle hint arrives; the agent does not let the chat stop such runs. A busy
+conflict is retried at most three times, then unsent text returns to the
+composer. Model and session management and TUI hand-off are not yet available.
+
+| GJC capability | Support |
+|---|---|
+| steer / follow-up | no / adapter queue |
+| permissions | agent approval choices |
+| model, thinking and session controls | unavailable |
+| TUI hand-off | unavailable |
