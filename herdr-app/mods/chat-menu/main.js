@@ -25,8 +25,7 @@ function chatOf(p) {
 
 const word = (s) => (typeof s === "string" ? s : s?.state ?? null);
 // Herdr's names for the agents (its status reports Claude Code as claude-code) → ours.
-// GJC joins this menu with its TUI hand-off (F5).
-const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex" };
+const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex", gjc: "gjc" };
 const agentOf = (t) => [t?.program?.key, t?.app, t?.status?.app, t?.report?.app, t?.agent].map((a) => HERDR_AGENTS[a]).find(Boolean) ?? null;
 
 /** Why a terminal can't continue as a chat (null: it can; `working`: once its run ends). A copy of new-chat's. */

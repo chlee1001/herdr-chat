@@ -21,6 +21,7 @@ type SelectOption = Extract<SessionConfigOption, { type: "select" }>;
 const COMMANDS_WAIT_MS = 2000;
 /** How long a session change waits for the prompt it cancelled to finish. */
 const STOP_WAIT_MS = 5000;
+const DISPOSE_CLOSE_WAIT_MS = 2000;
 
 export class AcpAdapter implements ProviderAdapter {
   readonly id: string;
@@ -362,7 +363,20 @@ export class AcpAdapter implements ProviderAdapter {
   async removeQueued(id: string): Promise<boolean> { const index = this.queue.findIndex((p) => p.id === id); if (index < 0) return false; this.queue.splice(index, 1); this.queueChanged(); return true; }
   abort(): void { this.aborting = true; for (const [id, ask] of this.asks) { ask.resolve({ outcome: { outcome: "cancelled" } }); this.emit({ type: "ask_closed", id }); } this.asks.clear(); if (this.sessionId && this.connection) void this.connection.agent.cancel({ sessionId: this.sessionId }); }
   async history(): Promise<NormalizedEvent[]> { return this.historyEvents; }
-  async dispose(): Promise<void> { const conn = this.connection; this.connection = null; if (conn) await conn.stop(); }
+  /** Closes the open session when the agent can (bounded), then the connection and the process. The connection is dropped first, so nothing resends on it. */
+  async dispose(): Promise<void> {
+    const conn = this.connection, session = this.sessionId;
+    this.connection = null;
+    if (!conn) return;
+    if (session && this.agentCaps?.sessionCapabilities?.close) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        conn.agent.closeSession({ sessionId: session }).catch((error) => this.host?.log(`${this.name} session/close failed: ${errorText(error)}`)),
+        new Promise((resolve) => { timer = setTimeout(resolve, DISPOSE_CLOSE_WAIT_MS); }),
+      ]).finally(() => clearTimeout(timer));
+    }
+    await conn.stop();
+  }
   kill(): void { this.connection?.kill(); }
 
   // ---- settings: the session's configOptions (category model, thought_level, mode) and its modes
