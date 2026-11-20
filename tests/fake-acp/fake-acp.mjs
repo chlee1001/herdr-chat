@@ -19,8 +19,8 @@ const update = async (sessionId, update, record = true) => {
   if (record) { saved[sessionId] ??= []; saved[sessionId].push(update); persist(); }
   await connection.sessionUpdate({ sessionId, update });
 };
-// FAKE_ACP_MODE: a module whose createMode({scenario, update}) flavours this agent like a specific one.
-if (process.env.FAKE_ACP_MODE) mode = (await import(pathToFileURL(process.env.FAKE_ACP_MODE).href)).createMode({ scenario, update });
+// FAKE_ACP_MODE: a module whose createMode({scenario, update, permission}) flavours this agent like a specific one.
+if (process.env.FAKE_ACP_MODE) mode = (await import(pathToFileURL(process.env.FAKE_ACP_MODE).href)).createMode({ scenario, update, permission: (params) => connection.requestPermission(params).then((result) => { log("permission/response", result); return result; }) });
 connection = new AgentSideConnection(() => ({
   async initialize(params) { log("initialize", params); return { protocolVersion: 1, agentCapabilities: { loadSession: true }, agentInfo: mode?.agentInfo ?? { name: "fake-acp", version: "1.0.0" } }; },
   async newSession(params) { log("session/new", params); const sessionId = randomUUID(); saved[sessionId] = []; persist(); await mode?.newSession?.(sessionId, params, connection); return { sessionId }; },
@@ -45,4 +45,5 @@ connection = new AgentSideConnection(() => ({
     return { stopReason: cancelled ? "cancelled" : "end_turn" };
   },
   async cancel(params) { log("session/cancel", params); if (mode) return mode.cancel(params); cancelled = true; release?.(); },
+  async extMethod(method, params) { log(method, params); if (mode?.extMethod) return mode.extMethod(method, params); throw RequestError.methodNotFound(method); },
 }), ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)));

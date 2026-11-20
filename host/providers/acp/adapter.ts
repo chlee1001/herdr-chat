@@ -14,6 +14,8 @@ export type AcpPrompt = { id: string; text: string; images: ImageBlock[]; mode: 
 export type PromptContext = { prompt: AcpPrompt; draining: boolean; accepted: boolean; observedOutput: boolean; attempt: number; stopReason?: string };
 export type PromptErrorAction = "retry" | "handled" | "throw" | "proceed";
 export type PromptOutcome = { type: "sending" } | { type: "response" } | { type: "error"; error: unknown };
+/** A steer's answer: taken into the running turn, refused this time (it waits for the run's end), or never possible with this agent. */
+export type SteerResult = { status: "accepted" } | { status: "rejected"; reason: string } | { status: "unsupported" };
 
 export class AcpAdapter implements ProviderAdapter {
   readonly id: string;
@@ -30,6 +32,12 @@ export class AcpAdapter implements ProviderAdapter {
   protected pending: PromptContext | null = null;
   protected aborting = false;
   protected queue: AcpPrompt[] = [];
+  /** Steers sent to the agent and not answered yet, with their answers. */
+  private steering: AcpPrompt[] = [];
+  private steerAnswers = new Map<AcpPrompt, Promise<SteerResult>>();
+  private clearing = false;
+  /** A `session/prompt` of ours is unanswered: its turn is running, so a steer joins it. */
+  private promptLive = false;
   private mapper = new AcpMapper();
   private replay: NormalizedEvent[] | null = null;
   private historyEvents: NormalizedEvent[] = [];
@@ -47,13 +55,14 @@ export class AcpAdapter implements ProviderAdapter {
   protected settleRun(aborted: boolean): void { if (this.runOpen) { for (const event of this.mapper.finish()) this.emit(event); this.runOpen = false; this.emit({ type: "run_settled", aborted }); this.onRunSettled(); } }
   protected onRunSettled(): void {}
   protected onConnectionClosed(): void {}
-  protected queueChanged(): void { this.emit({ type: "queue_changed", steering: [], followUp: this.queue.map((p) => p.text), followUpIds: this.queue.map((p) => p.id) }); }
+  protected queueChanged(): void { this.emit({ type: "queue_changed", steering: this.steering.map((p) => p.text), steeringIds: this.steering.map((p) => p.id), followUp: this.queue.map((p) => p.text), followUpIds: this.queue.map((p) => p.id) }); }
   protected clientMeta(): Record<string, unknown> { return this.spec.clientMeta ?? {}; }
   protected phaseHint(_update: SessionUpdate): "working" | "idle" | null { return null; }
   protected async settleGate(_ctx: PromptContext): Promise<"settle" | "hold"> { return "settle"; }
   protected async onPromptOutcome(outcome: PromptOutcome, _ctx: PromptContext): Promise<PromptErrorAction> { return outcome.type === "error" ? "throw" : "proceed"; }
   protected sessionOpened(): void {}
-  protected steer?(text: string, id: string): Promise<void>;
+  /** Sends a message into the turn of an unanswered prompt. Without it, messages sent while the agent works wait in the adapter queue. */
+  protected steer?(text: string, id: string): Promise<SteerResult>;
   protected onPhaseHint(_hint: "working" | "idle", _update: SessionUpdate): void {}
   protected async sessionRef(sessionId: string): Promise<string | null> {
     if (!sessionId || sessionId === "." || sessionId === ".." || /[/\\\0]/.test(sessionId) || !/^[\w.-]+$/.test(this.id)) throw new Error("Invalid ACP session identifier");
@@ -70,7 +79,8 @@ export class AcpAdapter implements ProviderAdapter {
 
   async start(session: string | null, host: AdapterHost): Promise<{ streaming: boolean; hasHistory: boolean }> {
     this.host = host; this.mapper = new AcpMapper(); this.historyEvents = [];
-    this.sessionId = null; this.pending = null; this.runOpen = false; this.aborting = false; this.queue = []; this.echoId = undefined;
+    this.sessionId = null; this.pending = null; this.runOpen = false; this.aborting = false; this.queue = []; this.steering = []; this.steerAnswers.clear(); this.promptLive = false; this.echoId = undefined;
+    this.capabilities.steer = Boolean(this.steer);
     const conn = new AcpConnection(this.opts.command, [...this.spec.args, ...this.opts.args], this.opts.cwd, agentEnv(this.spec.env), {
       sessionUpdate: ({ update }) => this.onUpdate(update),
       requestPermission: (request) => this.permission(request),
@@ -81,8 +91,8 @@ export class AcpAdapter implements ProviderAdapter {
       this.connection = null; this.runOpen = false; this.aborting = false; this.onConnectionClosed();
       // Unsent texts go back before `exited`, so the core's held follow-ups land after them in the composer.
       const unsent = this.pending?.draining && !this.pending.accepted && !this.pending.observedOutput ? [this.pending.prompt.text] : [];
-      const texts = [...unsent, ...this.queue.map((p) => p.text)];
-      if (this.queue.length) { this.queue = []; this.queueChanged(); }
+      const texts = [...unsent, ...this.steering.map((p) => p.text), ...this.queue.map((p) => p.text)];
+      if (this.queue.length || this.steering.length) { this.queue = []; this.steering = []; this.queueChanged(); }
       if (texts.length) this.emit({ type: "editor_text", text: texts.join("\n\n") });
       this.emit({ type: "exited", ...exit, command: this.opts.command });
     };
@@ -92,7 +102,7 @@ export class AcpAdapter implements ProviderAdapter {
   }
   private async open(conn: AcpConnection, session: string | null, host: AdapterHost): Promise<{ streaming: boolean; hasHistory: boolean }> {
     const init = await conn.agent.initialize({ protocolVersion: 1, clientCapabilities: { _meta: this.clientMeta() }, clientInfo: { name: "herdr-chat", version: "0.1.0" } });
-    this.emit({ type: "capabilities", capabilities: { images: init.agentCapabilities?.promptCapabilities?.image === true } });
+    this.emit({ type: "capabilities", capabilities: { images: init.agentCapabilities?.promptCapabilities?.image === true, steer: this.capabilities.steer } });
     const version = init.agentInfo?.version ?? null;
     this.emit({ type: "version", version });
     if (!this.versionWarned && version && this.spec.minimumVersion && !versionAtLeast(version, this.spec.minimumVersion)) { this.versionWarned = true; this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} ${version} is older than the supported version ${this.spec.minimumVersion}.` }); }
@@ -140,9 +150,47 @@ export class AcpAdapter implements ProviderAdapter {
   async prompt(p: AcpPrompt): Promise<{ disposition: Disposition }> {
     if (!this.connection || !this.sessionId) throw new AgentError(`${this.name} is not running`, !this.alive);
     if (p.busy || this.pending || this.runOpen) {
-      if (this.steer && p.mode !== "followUp" && !p.images.length) { await this.steer(p.text, p.id); return { disposition: "queued" }; }
+      // A steer carries text only: a message with images waits for the run's end. So does one sent after our prompt
+      // was answered (the run's tail, or a run the agent started itself): an agent may take a steer then and run it
+      // as a turn of its own, whose output never reaches this client.
+      if (this.steer && this.capabilities.steer && this.promptLive && p.mode !== "followUp" && !p.images.length) return this.steerPrompt(p, this.steer.bind(this));
       this.queue.push(p); this.queueChanged(); return { disposition: "queued" };
     }
+    return this.send(p, false);
+  }
+  private async steerPrompt(p: AcpPrompt, steer: (text: string, id: string) => Promise<SteerResult>): Promise<{ disposition: Disposition }> {
+    this.steering.push(p); this.queueChanged();
+    const answer = steer(p.text, p.id).catch((error): SteerResult => ({ status: "rejected", reason: error instanceof Error ? error.message : String(error) }));
+    this.steerAnswers.set(p, answer);
+    const result = await answer;
+    this.steerAnswers.delete(p);
+    const index = this.steering.indexOf(p);
+    // Stopped or exited meanwhile: its text already went back to the composer.
+    if (index < 0) {
+      if (result.status === "accepted" && this.alive) this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} took a steer after it went back to the composer: "${p.text.slice(0, 80)}". Sending it again repeats it.` });
+      return { disposition: "queued" };
+    }
+    this.steering.splice(index, 1);
+    if (result.status === "accepted") {
+      // The agent doesn't echo a steer: the chat shows it here, where it joined the turn.
+      for (const event of this.mapper.finish()) this.emit(event);
+      this.emit({ type: "user_message", text: p.text, images: 0, clientId: p.id });
+      this.queueChanged();
+      return { disposition: "queued" };
+    }
+    if (result.status === "unsupported") {
+      this.capabilities.steer = false;
+      this.emit({ type: "capabilities", capabilities: { steer: false } });
+      this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} can't steer a running turn: messages sent while it works wait for the run to end.` });
+    } else this.host?.log(`${this.name} steer rejected: ${result.reason}`);
+    if (this.pending || this.runOpen || this.clearing) {
+      this.queue.push(p); this.queueChanged();
+      if (result.status === "rejected" && !this.clearing) this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} didn't take the steer (${result.reason}); it goes after this run.`, once: "run" });
+      return { disposition: "queued" };
+    }
+    // The run ended while the steer was on its way: the message starts the next one.
+    this.queueChanged();
+    this.emit({ type: "run_cause", text: "Started by a message sent as the last turn ended." });
     return this.send(p, false);
   }
   protected async send(p: AcpPrompt, draining: boolean): Promise<{ disposition: Disposition }> {
@@ -156,7 +204,8 @@ export class AcpAdapter implements ProviderAdapter {
           await this.onPromptOutcome({ type: "sending" }, ctx);
           if (this.connection !== conn || !conn.alive) throw new AgentError(`${this.name} is not running`, true);
           this.echoId = p.id;
-          const result = await conn.agent.prompt({ sessionId: this.sessionId!, prompt: [{ type: "text", text: p.text }, ...p.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }))] });
+          this.promptLive = true;
+          const result = await conn.agent.prompt({ sessionId: this.sessionId!, prompt: [{ type: "text", text: p.text }, ...p.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }))] }).finally(() => { this.promptLive = false; });
           ctx.stopReason = result.stopReason;
           const action = await this.onPromptOutcome({ type: "response" }, ctx);
           if (action === "handled") return { disposition: "handled" };
@@ -211,7 +260,16 @@ export class AcpAdapter implements ProviderAdapter {
       this.settleRun(true);
     });
   }
-  async clearQueue(): Promise<string[]> { const texts = this.queue.map((p) => p.text); this.queue = []; this.queueChanged(); return texts; }
+  async clearQueue(): Promise<string[]> {
+    // A steer on its way may already be in the turn: wait briefly for its answer, so a taken one isn't also given back.
+    const answers = [...this.steerAnswers.values()];
+    if (answers.length) {
+      this.clearing = true;
+      let timer: NodeJS.Timeout | undefined;
+      try { await Promise.race([Promise.all(answers), new Promise((resolve) => { timer = setTimeout(resolve, 2000); })]); } finally { clearTimeout(timer); this.clearing = false; }
+    }
+    const texts = [...this.steering, ...this.queue].map((p) => p.text); this.steering = []; this.queue = []; this.queueChanged(); return texts;
+  }
   canRemoveQueued(id: string): boolean { return this.queue.some((p) => p.id === id); }
   async removeQueued(id: string): Promise<boolean> { const index = this.queue.findIndex((p) => p.id === id); if (index < 0) return false; this.queue.splice(index, 1); this.queueChanged(); return true; }
   abort(): void { this.aborting = true; for (const [id, ask] of this.asks) { ask.resolve({ outcome: { outcome: "cancelled" } }); this.emit({ type: "ask_closed", id }); } this.asks.clear(); if (this.sessionId && this.connection) void this.connection.agent.cancel({ sessionId: this.sessionId }); }

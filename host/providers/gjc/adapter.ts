@@ -1,7 +1,8 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AdapterHost, AdapterOptions, Disposition } from "../types.ts";
 import { agentEnv } from "../env.ts";
-import { AcpAdapter, type AcpPrompt, type PromptContext, type PromptErrorAction, type PromptOutcome } from "../acp/adapter.ts";
+import { AcpAdapter, type AcpPrompt, type PromptContext, type PromptErrorAction, type PromptOutcome, type SteerResult } from "../acp/adapter.ts";
+import { control, queuedMessages } from "./sdk.ts";
 import { findSession, sessionIdOf, sessionsDirectory } from "./sessions.ts";
 
 export class GjcAdapter extends AcpAdapter {
@@ -38,6 +39,29 @@ export class GjcAdapter extends AcpAdapter {
     return super.start(session, host);
   }
   protected sessionOpened(): void { this.opened = true; this.suppressed = true; }
+  /** `turn.steer` into the running turn; `clientRef` is the host's message id (a UUID, never GJC's reserved `abort-and-prompt:`). */
+  protected async steer(text: string, id: string): Promise<SteerResult> {
+    if (!this.connection || !this.sessionId) return { status: "rejected", reason: "GJC is not running" };
+    const agent = this.connection.agent, session = this.sessionId;
+    const answer = await control(agent, session, "turn.steer", { text, clientRef: id });
+    if (answer.ok) {
+      if (answer.result.status !== "accepted") return { status: "rejected", reason: `status ${String(answer.result.status)}` };
+      // GJC accepts a steer between turns too (the loop ended, the prompt not yet answered), as a follow-up it runs as
+      // a turn of its own whose output never reaches this client. Take such a one back: it waits in our queue instead.
+      const queued = await queuedMessages(agent, session).catch(() => null);
+      if (!queued) this.host?.log("GJC queue.messages.list failed; taking the steer as joined");
+      const own = queued?.findLast((m) => m.mode === "followUp" && m.text === text);
+      if (!own) return { status: "accepted" };
+      const removed = await control(agent, session, "queue.message.remove", { id: own.id }).catch(() => null);
+      if (removed?.ok) return { status: "rejected", reason: "the turn was ending" };
+      this.host?.log(`GJC queued the steer as a follow-up and kept it (${removed && !removed.ok ? removed.code : "no answer"})`);
+      this.emit({ type: "notice", level: "warning", source: "host", text: "GJC took the steer after its turn ended and runs it on its own; its answer may not show here.", once: "run" });
+      return { status: "accepted" };
+    }
+    // Only a GJC without the SDK, or without `turn.steer`, turns steering off; a malformed request (`undefined`) is our bug, not its.
+    if (answer.code === "method_not_found" || (answer.code === "unknown_operation" && answer.message.includes("turn.steer"))) return { status: "unsupported" };
+    return { status: "rejected", reason: answer.message ? `${answer.code}: ${answer.message}` : answer.code };
+  }
   protected async sessionIdOf(ref: string): Promise<string | null> { return sessionIdOf(ref); }
   protected async sessionRef(id: string): Promise<string | null> { return this.findFile(id); }
   private findFile(id: string): string | null {
