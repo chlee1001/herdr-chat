@@ -54,3 +54,31 @@ test("live GJC steer: Enter during a running command changes the answer", { skip
     host.artifact("gjc-live-steer", { steerMs, sessionFile: host.registry?.sessionFile });
   } finally { await host.stop(); }
 });
+
+test("live GJC settings: a model preset change, a reply, /compact, and the preset back", { skip: process.env.LIVE !== "1", timeout: 240_000 }, async () => {
+  const host = new Host({ name: "gjc-live-settings", provider: "gjc", agent: "gjc" });
+  await host.start();
+  const client = host.client;
+  let original: { provider: string; id: string } | null = null;
+  try {
+    await client.waitFor((c) => c.state.phase === "idle" && c.state.model, 30_000);
+    original = { provider: client.state.model.provider, id: client.state.model.id };
+    const { models } = await client.req("models");
+    // A light preset when GJC has one: the change costs a reply on it.
+    const other = models.find((m: { id: string }) => m.id !== original!.id && /lite|eco|light/i.test(m.id)) ?? models.find((m: { id: string }) => m.id !== original!.id);
+    assert.ok(other, "GJC offers another preset");
+    await client.req("set_model", { provider: other.provider, modelId: other.id });
+    await client.waitFor((c) => c.state.model?.id === other.id, 15_000);
+    await client.req("send", { text: "Reply with the single word KIWI." });
+    await client.waitFor((c) => c.state.phase === "idle" && c.items.some((item) => item.kind === "assistant" && /KIWI/.test(item.text)), 120_000);
+    await client.req("send", { text: "/compact" });
+    await client.waitFor((c) => c.items.some((item) => item.kind === "notice" && /^Compact(ed the conversation|ion failed)/.test(item.text)), 120_000);
+    const notice = client.items.findLast((item) => item.kind === "notice" && /^Compact/.test(item.text));
+    host.artifact("gjc-live-settings", { from: original.id, to: other.id, compaction: notice?.text, usage: client.state.usage });
+    assert.match(notice.text, /^Compacted the conversation/);
+  } finally {
+    // The preset is GJC's own setting: put it back.
+    if (original && client.state.model?.id !== original.id) await client.req("set_model", { provider: original.provider, modelId: original.id }).catch(() => {});
+    await host.stop();
+  }
+});

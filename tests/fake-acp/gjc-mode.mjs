@@ -69,13 +69,27 @@ export function createMode({ scenario, update, permission }) {
       cancelling = false;
       return { stopReason };
     },
-    async cancel() { cancelling = true; wake?.(); },
+    // `deaf`: session/cancel doesn't stop the turn (it ends after `delay` ms anyway).
+    async cancel() { cancelling = true; if (!scenario.deaf) wake?.(); },
     // `steer`: how turn.steer answers (accepted, a refusal code, unknown_operation for turn.steer or for undefined, method_not_found); `steerDelay` holds the answer.
     // `admit: false`: accepted like GJC between turns, but held as a follow-up (`queue.messages.list`); `keep: true` refuses its removal.
     // Outside mode `steer` it refuses with turn_not_active, so those scenarios exercise the adapter queue.
+    // `sdk: "method_not_found"`: no SDK methods at all. `usage`: "unknown_operation" refuses usage.get (default: FINDINGS fact 14's answer).
+    // `compaction`: "failed" refuses compaction.run, else it compacts for `compactDelay` ms. session.rename answers without a title update.
     async extMethod(method, params) {
       const answer = scenario.steer ?? (kind === "steer" ? "accepted" : "turn_not_active");
-      if (answer === "method_not_found" || !["_gjc/sdk/control", "_gjc/sdk/query"].includes(method)) throw RequestError.methodNotFound(method);
+      if (scenario.sdk === "method_not_found" || !["_gjc/sdk/control", "_gjc/sdk/query"].includes(method)) throw RequestError.methodNotFound(method);
+      if (method === "_gjc/sdk/query" && params.query === "usage.get") {
+        if (scenario.usage === "unknown_operation") return { type: "query_response", ok: false, error: { code: "unknown_operation", message: "Unknown SDK query: usage.get" } };
+        return { type: "query_response", ok: true, page: { items: [{ input: 16099, output: 5, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0.0016124 }], complete: true, revision: "1" } };
+      }
+      if (params.operation === "compaction.run") {
+        await delay(scenario.compactDelay ?? 50);
+        if (scenario.compaction === "failed") return { ok: false, error: { code: "invalid_state", message: "Nothing to compact" } };
+        return { started: true };
+      }
+      if (params.operation === "session.rename") return { ok: true };
+      if (answer === "method_not_found") throw RequestError.methodNotFound(method);
       if (method === "_gjc/sdk/query") {
         if (params.query !== "queue.messages.list") return { ok: false, error: { code: "unknown_operation", message: `Unknown SDK query: ${params.query}` } };
         return { type: "query_response", ok: true, page: { items: followUps.map((f) => ({ ...f, mode: "followUp", label: "Queued" })), complete: true, revision: "1" } };

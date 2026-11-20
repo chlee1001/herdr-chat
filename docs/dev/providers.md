@@ -108,11 +108,28 @@ not a registry. The default adapter stores session pointers in the host state
 directory and resumes them through `session/load`.
 
 The generic ACP adapter queues messages while a turn is running, supports
-permission requests and reports streamed text, thinking, tools and plans. It
-does not advertise model selection, compaction, session management or a TUI
-unless a TUI command is supplied. Agents with additional lifecycle semantics
+permission requests and reports streamed text, thinking, tools and plans.
+Session settings come from the `configOptions` of `session/new`,
+`session/load`, `session/set_config_option` and `config_option_update`: the
+select option of category `model` is the model list and the model, category
+`thought_level` the thinking levels and level. The session's modes (or a
+`mode` option when it has none) are the permission modes; changes go out as
+`session/set_config_option` and `session/set_mode`, and a refused change
+reports the setting the agent still has, with a notice. `available_commands_update`
+is the command list, `usage_update` the context usage. /resume lists the first
+page of `session/list` (with `cwd` for this folder): `modified` is
+`Date.parse(updatedAt)` (0, last, when missing or invalid), newest first, no
+message count. `switchSession` and `newSession` cancel and wait for the running
+prompt (at most 5 s; a later answer is dropped), settle the run, drop the queue and asks, then `session/load` or
+`session/new`; the session left is closed with `session/close` when the agent
+offers it (loading it again waits for that close), and updates and permission
+requests of another session are ignored. There is no fork,
+compaction, renaming or TUI unless a subclass or a TUI command adds them.
+Agents with additional lifecycle semantics
 can subclass `AcpAdapter` and override its protected hooks: `sessionRef` and
-`sessionIdOf` (session pointers), `clientMeta`, `phaseHint` and `onPhaseHint`,
+`sessionIdOf` (session pointers), `sessionPaths` (the references of listed
+sessions), `commandSource` (a command's menu group), `sessionChanging`,
+`clientMeta`, `phaseHint` and `onPhaseHint`,
 `onPromptOutcome` (retry or handle a prompt), `settleGate` (hold the run open),
 `steer` (send a text message into the turn of an unanswered prompt: accepted,
 rejected, or unsupported, which turns steering off for the session) and
@@ -140,12 +157,25 @@ and one it refused returns to the composer; if GJC takes it later, a notice says
 so. A refused steer waits in the adapter queue (or starts the next run if the
 turn has already ended). A message with images and ⌥Enter follow-ups also wait
 for the run's end. A GJC without `_gjc/sdk/control` or `turn.steer` turns
-steering off for the session. Model and session management and TUI hand-off are
-not yet available.
+steering off for the session.
+
+The model chip lists GJC's model presets and the thinking chip its levels
+(its `configOptions`); the mode chip shows Default and Plan, but GJC 0.21 refuses
+Plan over ACP (no plan-mode lifecycle there), so choosing it leaves Default with
+a notice. GJC's skills (`skill:<name>` commands) are in the `/` menu as skills.
+/resume lists GJC's sessions by their session files. `/compact` runs
+`compaction.run` (no instructions); GJC's own compaction, reported in
+`session_info_update._meta.gjcCompactionState`, shows as compaction notices.
+`/name` runs `session.rename`. The footer's cost is `usage.get`'s; without it
+the footer shows no cost. A GJC without `_gjc/sdk/control` turns compaction and
+renaming off with a notice. TUI hand-off is not yet available.
 
 | GJC capability | Support |
 |---|---|
 | steer / follow-up | `turn.steer` (text only) / adapter queue |
 | permissions | agent approval choices |
-| model, thinking and session controls | unavailable |
+| model presets, thinking, modes | `configOptions`, `session/set_config_option`, `session/set_mode` (Plan refused by GJC 0.21) |
+| commands | `available_commands_update` (skills as `skill:<name>`) |
+| sessions | `session/list`, `session/load`, `session/new`, `session/close`; no fork |
+| compaction, rename, cost | `compaction.run`, `session.rename`, `usage.get` |
 | TUI hand-off | unavailable |
