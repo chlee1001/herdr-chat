@@ -113,22 +113,39 @@ does not advertise model selection, compaction, session management or a TUI
 unless a TUI command is supplied. Agents with additional lifecycle semantics
 can subclass `AcpAdapter` and override its protected hooks: `sessionRef` and
 `sessionIdOf` (session pointers), `clientMeta`, `phaseHint` and `onPhaseHint`,
-`onPromptOutcome` (retry or handle a prompt), `settleGate` (hold the run open)
-and `onRunSettled`/`onConnectionClosed`. `tests/fake-acp/` is a scripted ACP agent for
+`onPromptOutcome` (retry or handle a prompt), `settleGate` (hold the run open),
+`steer` (send a text message into the turn of an unanswered prompt: accepted,
+rejected, or unsupported, which turns steering off for the session) and
+`onRunSettled`/`onConnectionClosed`. `tests/fake-acp/` is a scripted ACP agent for
 an ACP agent's host tests.
 
 ## GJC (ACP)
 
-The GJC provider runs `gjc --mode acp` and requires GJC 0.21.0 or newer.
-It discovers GJC's own session files and waits for idle phase hints after a
-prompt before releasing queued messages. Background runs remain working until
-an idle hint arrives; the agent does not let the chat stop such runs. A busy
-conflict is retried at most three times, then unsent text returns to the
-composer. Model and session management and TUI hand-off are not yet available.
+The GJC provider runs `gjc --mode acp` and requires GJC 0.21.0 or newer. It
+discovers GJC's own session files and waits for idle phase hints after a prompt
+before releasing queued messages. Background runs remain working until an idle
+hint arrives; the agent does not let the chat stop such runs. A busy conflict is
+retried at most three times, then unsent text returns to the composer. Enter
+while GJC works on the chat's own prompt steers with `_gjc/sdk/control`
+`turn.steer`; GJC does not echo a steer, so the adapter adds the message to the
+timeline when GJC accepts it. GJC also accepts a steer as the turn ends, as a
+follow-up it would run as a turn of its own whose output this client never
+receives; the adapter finds such a steer in `queue.messages.list`, removes it
+with `queue.message.remove` and keeps it in its own queue. The check runs once,
+right after the answer: a steer GJC moves to its follow-up queue later, at the
+turn's very end, still runs unseen. After GJC answers the prompt (the run's
+tail) or during a run GJC started itself, Enter queues without steering. Esc
+waits up to 2 s for a steer on its way, so one GJC took stays in the timeline
+and one it refused returns to the composer; if GJC takes it later, a notice says
+so. A refused steer waits in the adapter queue (or starts the next run if the
+turn has already ended). A message with images and ⌥Enter follow-ups also wait
+for the run's end. A GJC without `_gjc/sdk/control` or `turn.steer` turns
+steering off for the session. Model and session management and TUI hand-off are
+not yet available.
 
 | GJC capability | Support |
 |---|---|
-| steer / follow-up | no / adapter queue |
+| steer / follow-up | `turn.steer` (text only) / adapter queue |
 | permissions | agent approval choices |
 | model, thinking and session controls | unavailable |
 | TUI hand-off | unavailable |
