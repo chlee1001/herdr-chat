@@ -168,7 +168,24 @@ a notice. GJC's skills (`skill:<name>` commands) are in the `/` menu as skills.
 `session_info_update._meta.gjcCompactionState`, shows as compaction notices.
 `/name` runs `session.rename`. The footer's cost is `usage.get`'s; without it
 the footer shows no cost. A GJC without `_gjc/sdk/control` turns compaction and
-renaming off with a notice. TUI hand-off is not yet available.
+renaming off with a notice.
+
+`/tui` stops the run, sends `session/close` for the open session (bounded at 2 s), closes the connection and opens
+`gjc --resume <id>` in the chat's folder; GJC finds the session by its exact id
+(`/login` runs `gjc login`). Continue as chat on a GJC TUI takes the session file
+that process tree has open, else the newest session file of its folder written
+since it started (`gjc/tui.ts`), and throws why not when there is none. While a
+chat shows a session, its terminal carries the `gjc.session`, `gjc.cwd`,
+`gjc.file` and `gjc.title` labels GJC's own herdr-bridge sets for a TUI
+(`gjc/labels.ts`); they are set once the session file is known, again when the
+name changes, and cleared when the chat lets go of the session (a hand-off, a
+session switch, shutdown). Without `HC_TERMINAL_ID`, or when `hc label` fails,
+nothing is labelled (a failure is one log line). The chat does not publish
+`agents.subagents`. There is no `sessionHolder`: whether a GJC process outlives
+the chat's dispose and keeps the session file open has not been checked against a
+live GJC, so a second process on the session is not reported on the conflict
+screen. Checking it (`lsof` on the session file after a dispose) decides whether
+one is needed.
 
 | GJC capability | Support |
 |---|---|
@@ -178,4 +195,4 @@ renaming off with a notice. TUI hand-off is not yet available.
 | commands | `available_commands_update` (skills as `skill:<name>`) |
 | sessions | `session/list`, `session/load`, `session/new`, `session/close`; no fork |
 | compaction, rename, cost | `compaction.run`, `session.rename`, `usage.get` |
-| TUI hand-off | unavailable |
+| TUI hand-off | `gjc --resume <id>`; Continue as chat by the open session file; `gjc.*` terminal labels |

@@ -4,6 +4,7 @@ import { agentEnv } from "../env.ts";
 import { AcpAdapter, type AcpPrompt, type PromptContext, type PromptErrorAction, type PromptOutcome, type SteerResult } from "../acp/adapter.ts";
 import { control, query, queuedMessages, type SdkAnswer } from "./sdk.ts";
 import { findSession, findSessions, sessionIdOf, sessionsDirectory } from "./sessions.ts";
+import { GjcLabels } from "./labels.ts";
 
 export class GjcAdapter extends AcpAdapter {
   private directory = "";
@@ -30,10 +31,15 @@ export class GjcAdapter extends AcpAdapter {
   private manualCompacting = false;
   /** usage.get's last refusal, logged once. */
   private costRefusal: string | null = null;
+  /** The terminal's `gjc.*` labels for the open session, and the session's name they carry. */
+  private labels: GjcLabels | null = null;
+  private title = "";
+  /** The session a switch is leaving, with its name: a failed switch comes back to it. */
+  private leaving: { id: string; title: string } | null = null;
 
   constructor(opts: AdapterOptions) {
     super({ id: "gjc", name: "GJC", command: opts.command, args: ["--mode", "acp"], env: {}, clientMeta: { gjc: { permissionHandling: "prompt" } }, minimumVersion: "0.21.0" }, opts);
-    this.capabilities.tui = false;
+    this.capabilities.tui = true;
     this.capabilities.compact = true; this.capabilities.rename = true;
   }
   async start(session: string | null, host: AdapterHost) {
@@ -41,7 +47,8 @@ export class GjcAdapter extends AcpAdapter {
     this.directory = dir.path; this.file = null; this.opened = false; this.suppressed = true;
     this.lastSearch = 0; this.warnedAmbiguous = false; this.hint = null; this.hintRun = false; this.cancelNoticed = false;
     this.restored = []; this.restoredUntil = 0; this.retrying = false; this.retryCancelled = false; this.promptInFlight = false; this.lastCancel = 0;
-    this.autoCompacting = false; this.manualCompacting = false; this.costRefusal = null;
+    this.autoCompacting = false; this.manualCompacting = false; this.costRefusal = null; this.title = ""; this.leaving = null;
+    this.labels = new GjcLabels(process.env.HERDR_CHAT_HC || "hc", process.env.HC_TERMINAL_ID || null, (m) => host.log(m));
     this.capabilities.compact = true; this.capabilities.rename = true; this.capabilities.cost = false;
     host.log(`GJC sessions directory ${dir.path} (${dir.rule})`);
     return super.start(session, host);
@@ -50,6 +57,8 @@ export class GjcAdapter extends AcpAdapter {
   protected sessionChanging(): void {
     if (this.searchTimer) clearTimeout(this.searchTimer);
     this.searchTimer = null; this.file = null; this.opened = false; this.suppressed = true; this.warnedAmbiguous = false;
+    this.leaving = this.sessionId ? { id: this.sessionId, title: this.title } : null;
+    this.title = ""; void this.labels?.set(null);
     this.hint = null; this.hintRun = false; this.cancelNoticed = false; this.restored = []; this.restoredUntil = 0;
     this.retrying = false; this.retryCancelled = false; this.promptInFlight = false; this.cancelSentAfterRestore = false; this.lastCancel = 0;
     if (this.autoCompacting) this.emit({ type: "compaction", phase: "end", outcome: "aborted" });
@@ -90,6 +99,7 @@ export class GjcAdapter extends AcpAdapter {
     if (!this.connection || !this.sessionId) throw new Error("GJC is not running");
     await this.sdk(control(this.connection.agent, this.sessionId, "session.rename", { name }), "rename", "name sessions");
     this.emit({ type: "session", name: name || null });
+    this.title = name; this.showLabels();
   }
   /** The context from the last `usage_update`; the session's cost from `usage.get` when GJC gives one. */
   async usage(): Promise<UsageInfo> {
@@ -131,13 +141,17 @@ export class GjcAdapter extends AcpAdapter {
     return { status: "rejected", reason: answer.message ? `${answer.code}: ${answer.message}` : answer.code };
   }
   protected async sessionIdOf(ref: string): Promise<string | null> { return sessionIdOf(ref); }
-  protected async sessionRef(id: string): Promise<string | null> { return this.findFile(id); }
+  protected async sessionRef(id: string): Promise<string | null> {
+    if (this.leaving?.id === id && !this.title) this.title = this.leaving.title;
+    return this.findFile(id);
+  }
   private findFile(id: string): string | null {
     this.lastSearch = Date.now();
     const result = findSession(this.directory, id, this.opts.cwd);
     if (result.ambiguous && !this.warnedAmbiguous) { this.warnedAmbiguous = true; this.emit({ type: "notice", level: "warning", source: "host", text: "GJC has multiple matching sessions, none in this working directory." }); }
     if (result.alternatives.length) this.host?.log(`GJC session alternatives: ${result.alternatives.join(", ")}`);
     this.file = result.file;
+    this.showLabels();
     return this.file;
   }
   private searchFile(): void {
@@ -147,9 +161,16 @@ export class GjcAdapter extends AcpAdapter {
     if (delay) this.searchTimer = setTimeout(search, delay); else search();
   }
   protected onRunSettled(): void { this.host?.log("GJC run settled"); this.suppressed = false; this.hintRun = false; this.cancelNoticed = false; this.searchFile(); }
-  protected onConnectionClosed(): void { for (const wake of [...this.waiters]) wake(); }
+  protected onConnectionClosed(): void {
+    // An agent that exited on its own: a pending file search must not label the terminal for a session nobody holds.
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    void this.labels?.close();
+    for (const wake of [...this.waiters]) wake();
+  }
   protected onUpdate(update: SessionUpdate): void {
     super.onUpdate(update);
+    if (update.sessionUpdate === "session_info_update" && typeof update.title === "string") { this.title = update.title; this.showLabels(); }
     if (!this.replaying && update.sessionUpdate === "session_info_update") this.onCompactionMeta(update._meta);
     if (this.retryCancelled && this.pending?.accepted && !this.cancelSentAfterRestore && this.connection && this.sessionId) {
       this.cancelSentAfterRestore = true;
@@ -283,5 +304,21 @@ export class GjcAdapter extends AcpAdapter {
     }
     super.abort();
   }
-  async dispose(): Promise<void> { if (this.searchTimer) clearTimeout(this.searchTimer); this.searchTimer = null; for (const wake of [...this.waiters]) wake(); await super.dispose(); }
+  /** Labels the terminal with the open session once its file is known; the name follows when it changes. */
+  private showLabels(): void {
+    if (!this.labels || !this.sessionId || !this.file) return;
+    void this.labels.set({ session: this.sessionId, cwd: this.opts.cwd, file: this.file, title: this.title });
+  }
+  /** `gjc --resume <id>` finds the session by its exact id, then prefix, then folder (cli/args.ts). */
+  tuiCommand(session: string): string[] {
+    return [this.opts.command, "--resume", (session.endsWith(".jsonl") ? sessionIdOf(session) : null) ?? this.sessionId ?? session];
+  }
+  utilityCommand(name: string): string[] | null { return name === "login" ? [this.opts.command, "login"] : null; }
+  async dispose(): Promise<void> {
+    if (this.searchTimer) clearTimeout(this.searchTimer); this.searchTimer = null; for (const wake of [...this.waiters]) wake();
+    // The connection drops at once (a retry in conflict backoff must find it gone), so the labels clear beside it.
+    const cleared = this.labels?.close();
+    await super.dispose();
+    await cleared;
+  }
 }

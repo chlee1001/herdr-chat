@@ -53,8 +53,7 @@ const base = (p) => String(p ?? "").split("/").pop();
 const NAMES = Object.fromEntries(CHOICES.map((c) => [c.id, c.label]));
 
 // Herdr's names for the agents (its status reports Claude Code as claude-code) → ours.
-// GJC joins with its TUI hand-off (F5): until then its TUI can't continue as a chat.
-const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex" };
+const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex", gjc: "gjc" };
 
 /** The agent a terminal runs, as Herdr reports it (an id of CHOICES), else null. */
 export function agentOf(t) {
@@ -64,7 +63,7 @@ export function agentOf(t) {
 
 /**
  * Why a terminal can't continue as a chat (null: it can): a live agent TUI
- * (Pi, Claude Code, Codex), idle or done. `working: true`: it can once its run
+ * (Pi, Claude Code, Codex, GJC), idle or done. `working: true`: it can once its run
  * ends (chat-menu shows the item disabled). Which session it has open is the
  * host's to find (continueAsChat). Shared with chat-menu (a copy there: mods
  * can't import each other).

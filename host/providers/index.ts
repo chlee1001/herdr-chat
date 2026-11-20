@@ -6,6 +6,7 @@ import { GjcAdapter } from "./gjc/adapter.ts";
 import { piTuiSession } from "./pi/tui.ts";
 import { claudeTuiSession } from "./claude/tui.ts";
 import { codexTuiSession } from "./codex/tui.ts";
+import { gjcTuiSession } from "./gjc/tui.ts";
 import type { ProviderAdapter, AdapterOptions } from "./types.ts";
 import type { TuiQuery, TuiSession } from "./tui.ts";
 
@@ -20,7 +21,7 @@ export const PROVIDERS: Record<string, Factory> = {
   pi: { command: "pi", create: (o) => new PiAdapter(o), tuiSession: piTuiSession },
   claude: { command: "claude", create: (o) => new ClaudeAdapter(o), tuiSession: claudeTuiSession },
   codex: { command: "codex", create: (o) => new CodexAdapter(o), tuiSession: codexTuiSession },
-  gjc: { command: "gjc", create: (o) => new GjcAdapter(o), tuiSession: () => { throw new Error("GJC TUI hand-off is not yet available"); } },
+  gjc: { command: "gjc", create: (o) => new GjcAdapter(o), tuiSession: gjcTuiSession },
 };
 
 export function tuiSession(provider: string, q: TuiQuery): TuiSession {

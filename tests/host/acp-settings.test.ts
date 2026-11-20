@@ -375,7 +375,7 @@ test("real host: chips, / menu, /compact, /name, /resume and no /fork", async ()
     await c.waitFor((x) => x.state.commands.some((cmd: { name: string; source: string }) => cmd.name === "skill:ralplan" && cmd.source === "skill"), 5000);
     const names = c.state.commands.map((cmd: { name: string }) => cmd.name);
     assert.ok(names.includes("compact") && names.includes("name") && names.includes("thinking"));
-    assert.ok(!names.includes("fork") && !names.includes("tui"));
+    assert.ok(!names.includes("fork") && names.includes("tui"));
 
     await c.req("set_model", { provider: "gjc", modelId: "claude-opus" });
     await c.req("set_thinking", { level: "high" });
