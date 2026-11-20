@@ -2,8 +2,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SessionUpdate, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
-import { AgentError, type AdapterHost, type AdapterOptions, type AskAnswer, type Capabilities, type Disposition, type ImageBlock, type NormalizedEvent, type PromptMode, type ProviderAdapter, type SessionSource } from "../types.ts";
+import type { AgentCapabilities, AvailableCommand, SessionConfigOption, SessionConfigSelectOption, SessionModeState, SessionUpdate, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
+import { AgentError, type AdapterHost, type AdapterOptions, type AgentCommand, type AgentModel, type AskAnswer, type Capabilities, type Disposition, type ImageBlock, type NormalizedEvent, type PermissionMode, type PromptMode, type ProviderAdapter, type SessionInfo, type SessionScope, type SessionSource, type UsageInfo } from "../types.ts";
 import { agentEnv } from "../env.ts";
 import { AcpConnection } from "./connection.ts";
 import { AcpMapper } from "./map.ts";
@@ -16,13 +16,19 @@ export type PromptErrorAction = "retry" | "handled" | "throw" | "proceed";
 export type PromptOutcome = { type: "sending" } | { type: "response" } | { type: "error"; error: unknown };
 /** A steer's answer: taken into the running turn, refused this time (it waits for the run's end), or never possible with this agent. */
 export type SteerResult = { status: "accepted" } | { status: "rejected"; reason: string } | { status: "unsupported" };
+type SelectOption = Extract<SessionConfigOption, { type: "select" }>;
+/** How long `commands()` waits for the agent's first `available_commands_update` of a session. */
+const COMMANDS_WAIT_MS = 2000;
+/** How long a session change waits for the prompt it cancelled to finish. */
+const STOP_WAIT_MS = 5000;
 
 export class AcpAdapter implements ProviderAdapter {
   readonly id: string;
   readonly name: string;
   readonly tools = ACP_TOOLS;
   readonly capabilities: Capabilities;
-  readonly sessions: SessionSource = { kind: "agent", list: async () => [] };
+  /** /resume: the first page of the agent's `session/list` (this folder's, or with `all` every folder's). */
+  readonly sessions: SessionSource = { kind: "agent", list: (scope) => this.listSessions(scope) };
   protected readonly spec: AcpAgentSpec;
   protected readonly opts: AdapterOptions;
   protected host: AdapterHost | null = null;
@@ -44,6 +50,27 @@ export class AcpAdapter implements ProviderAdapter {
   private asks = new Map<string, { resolve: (response: RequestPermissionResponse) => void; tool: string; denied: Set<string> }>();
   private echoId: string | undefined;
   private versionWarned = false;
+  /** The session whose `session/load` is under way: its replay is ours although `sessionId` is not it yet. */
+  private loadingId: string | null = null;
+  /** A session change is under way (`sessionId` is still the old one); `left`: sessions this chat moved away from. */
+  private changing = false;
+  private left = new Set<string>();
+  /** `session/close` requests on their way, by session: loading that session again waits for its close. */
+  private closing = new Map<string, Promise<unknown>>();
+  /** Bumped by each session change and start: a prompt of an earlier one leaves the current state alone. */
+  private epoch = 0;
+  /** Resolves when the running `send` is done. */
+  private sendDone: Promise<void> = Promise.resolve();
+  private agentCaps: AgentCapabilities | undefined;
+  /** The session's settings: its `configOptions` (model, thought_level, mode) and its modes. */
+  private config: SessionConfigOption[] = [];
+  private modes: SessionModeState | null = null;
+  /** The settings last reported to the host, so an unchanged update says nothing. */
+  private shown: { model?: string; thinking?: string; mode?: string | null } = {};
+  /** The session's `available_commands_update` (null: none yet). */
+  private agentCommands: AvailableCommand[] | null = null;
+  private commandWaiters = new Set<() => void>();
+  private lastUsage: { used: number; size: number; cost: number | null } | null = null;
 
   constructor(spec: AcpAgentSpec, opts: AdapterOptions) {
     this.spec = spec; this.opts = opts; this.id = spec.id; this.name = spec.name;
@@ -61,6 +88,18 @@ export class AcpAdapter implements ProviderAdapter {
   protected async settleGate(_ctx: PromptContext): Promise<"settle" | "hold"> { return "settle"; }
   protected async onPromptOutcome(outcome: PromptOutcome, _ctx: PromptContext): Promise<PromptErrorAction> { return outcome.type === "error" ? "throw" : "proceed"; }
   protected sessionOpened(): void {}
+  /** A session change begins (`newSession`, `switchSession`): forget the agent-specific state of the old session. */
+  protected sessionChanging(): void {}
+  /** The `session/load` replay is being read: its updates rebuild history, not the live chat. */
+  protected get replaying(): boolean { return this.replay !== null; }
+  /** Where the agent's command came from, for the `/` menu. */
+  protected commandSource(_name: string): AgentCommand["source"] { return "extension"; }
+  /** The references of these listed sessions (default: `sessionRef` each); null: only its id. */
+  protected async sessionPaths(ids: string[]): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    for (const id of ids) out.set(id, await this.sessionRef(id).catch(() => null));
+    return out;
+  }
   /** Sends a message into the turn of an unanswered prompt. Without it, messages sent while the agent works wait in the adapter queue. */
   protected steer?(text: string, id: string): Promise<SteerResult>;
   protected onPhaseHint(_hint: "working" | "idle", _update: SessionUpdate): void {}
@@ -80,9 +119,11 @@ export class AcpAdapter implements ProviderAdapter {
   async start(session: string | null, host: AdapterHost): Promise<{ streaming: boolean; hasHistory: boolean }> {
     this.host = host; this.mapper = new AcpMapper(); this.historyEvents = [];
     this.sessionId = null; this.pending = null; this.runOpen = false; this.aborting = false; this.queue = []; this.steering = []; this.steerAnswers.clear(); this.promptLive = false; this.echoId = undefined;
+    this.loadingId = null; this.changing = false; this.switching = null; this.left.clear(); this.closing.clear(); this.epoch++; this.agentCaps = undefined; this.forgetSession();
     this.capabilities.steer = Boolean(this.steer);
     const conn = new AcpConnection(this.opts.command, [...this.spec.args, ...this.opts.args], this.opts.cwd, agentEnv(this.spec.env), {
-      sessionUpdate: ({ update }) => this.onUpdate(update),
+      // An update of another session (one this chat left, still running in the agent) is not this chat's.
+      sessionUpdate: ({ sessionId, update }) => { if (this.accepts(sessionId)) this.onUpdate(update); },
       requestPermission: (request) => this.permission(request),
     });
     this.connection = conn;
@@ -102,7 +143,9 @@ export class AcpAdapter implements ProviderAdapter {
   }
   private async open(conn: AcpConnection, session: string | null, host: AdapterHost): Promise<{ streaming: boolean; hasHistory: boolean }> {
     const init = await conn.agent.initialize({ protocolVersion: 1, clientCapabilities: { _meta: this.clientMeta() }, clientInfo: { name: "herdr-chat", version: "0.1.0" } });
-    this.emit({ type: "capabilities", capabilities: { images: init.agentCapabilities?.promptCapabilities?.image === true, steer: this.capabilities.steer } });
+    this.agentCaps = init.agentCapabilities;
+    this.capabilities.images = init.agentCapabilities?.promptCapabilities?.image === true;
+    this.emit({ type: "capabilities", capabilities: { images: this.capabilities.images, steer: this.capabilities.steer } });
     const version = init.agentInfo?.version ?? null;
     this.emit({ type: "version", version });
     if (!this.versionWarned && version && this.spec.minimumVersion && !versionAtLeast(version, this.spec.minimumVersion)) { this.versionWarned = true; this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} ${version} is older than the supported version ${this.spec.minimumVersion}.` }); }
@@ -110,23 +153,54 @@ export class AcpAdapter implements ProviderAdapter {
     if (session) {
       const id = await this.sessionIdOf(session);
       if (id) {
-        this.replay = [];
-        try {
-          await conn.agent.loadSession({ sessionId: id, cwd: this.opts.cwd, mcpServers: [] });
-          this.replay.push(...this.mapper.finish()); this.historyEvents = this.replay; this.sessionId = id; resumed = true;
-        } catch (error) { host.log(`ACP load failed: ${error}`); this.mapper = new AcpMapper(); }
-        this.replay = null;
+        try { await this.load(conn, id); resumed = true; } catch (error) { host.log(`ACP load failed: ${error}`); }
       }
       if (!resumed) this.emit({ type: "notice", level: "warning", source: "host", text: `Could not load the ${this.name} session; starting a new session.` });
     }
-    if (!resumed) this.sessionId = (await conn.agent.newSession({ cwd: this.opts.cwd, mcpServers: [] })).sessionId;
+    if (!resumed) await this.create(conn);
+    await this.announce();
+    return { streaming: false, hasHistory: resumed };
+  }
+  /** `session/load`: its replay becomes the history, its settings the chat's. Throws (nothing changed) when the agent refuses. */
+  private async load(conn: AcpConnection, id: string): Promise<void> {
+    this.mapper = new AcpMapper(); this.replay = []; this.loadingId = id;
+    try {
+      const r = await conn.agent.loadSession({ sessionId: id, cwd: this.opts.cwd, mcpServers: [] });
+      this.replay.push(...this.mapper.finish());
+      this.historyEvents = this.replay; this.sessionId = id;
+      this.applySettings(r?.configOptions, r?.modes);
+    } catch (error) { this.mapper = new AcpMapper(); throw error; } finally { this.replay = null; this.loadingId = null; }
+  }
+  private async create(conn: AcpConnection): Promise<void> {
+    const r = await conn.agent.newSession({ cwd: this.opts.cwd, mcpServers: [] });
+    this.historyEvents = []; this.sessionId = r.sessionId;
+    this.applySettings(r.configOptions, r.modes);
+  }
+  /** The session is open: its reference and name (a loaded one's title from its replay) go to the host. */
+  private async announce(): Promise<void> {
     this.sessionOpened();
     const file = await this.sessionRef(this.sessionId!);
-    this.emit({ type: "session", id: this.sessionId, file, name: null });
-    return { streaming: false, hasHistory: resumed };
+    const named = this.historyEvents.findLast((e): e is Extract<NormalizedEvent, { type: "session" }> => e.type === "session" && e.name !== undefined);
+    this.emit({ type: "session", id: this.sessionId, file, name: named?.name ?? null });
+  }
+  /** An update or ask of this session is the chat's. A new session's id is not known before its answer, so while one is created anything but the old sessions is. */
+  private accepts(sessionId: string): boolean {
+    if (sessionId === this.loadingId) return true;
+    if (this.changing) return this.loadingId === null && sessionId !== this.sessionId && !this.left.has(sessionId);
+    return this.sessionId === null || sessionId === this.sessionId;
+  }
+  /** Forgets the session's settings, commands and usage (a new one reports its own). */
+  private forgetSession(): void {
+    this.config = []; this.modes = null; this.shown = {}; this.agentCommands = null; this.lastUsage = null;
   }
   protected onUpdate(update: SessionUpdate): void {
     if (!this.replay) this.emit({ type: "heartbeat" });
+    switch (update.sessionUpdate) {
+      case "config_option_update": this.applySettings(update.configOptions, undefined); break;
+      case "current_mode_update": this.setCurrentMode(update.currentModeId); break;
+      case "available_commands_update": this.agentCommands = update.availableCommands; for (const wake of [...this.commandWaiters]) wake(); break;
+      case "usage_update": this.lastUsage = { used: update.used, size: update.size, cost: update.cost?.amount ?? null }; break;
+    }
     const hint = this.phaseHint(update);
     if (hint) { if (this.pending && hint === "working") this.openRun(); this.onPhaseHint(hint, update); }
     if (!this.replay && this.pending && ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(update.sessionUpdate)) { if (update.sessionUpdate === "user_message_chunk") this.pending.accepted = true; this.pending.observedOutput = true; this.openRun(); }
@@ -135,6 +209,7 @@ export class AcpAdapter implements ProviderAdapter {
     for (const event of this.mapper.update(update, id)) this.emit(event);
   }
   private permission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    if (!this.accepts(request.sessionId)) { this.host?.log(`${this.name} asked for a session this chat left; cancelled`); return Promise.resolve({ outcome: { outcome: "cancelled" } }); }
     if (this.pending) { this.pending.accepted = true; this.openRun(); }
     const id = randomUUID();
     return new Promise((resolve) => {
@@ -149,6 +224,7 @@ export class AcpAdapter implements ProviderAdapter {
   }
   async prompt(p: AcpPrompt): Promise<{ disposition: Disposition }> {
     if (!this.connection || !this.sessionId) throw new AgentError(`${this.name} is not running`, !this.alive);
+    if (this.switching) { await this.switching; return this.prompt(p); }
     if (p.busy || this.pending || this.runOpen) {
       // A steer carries text only: a message with images waits for the run's end. So does one sent after our prompt
       // was answered (the run's tail, or a run the agent started itself): an agent may take a steer then and run it
@@ -195,7 +271,12 @@ export class AcpAdapter implements ProviderAdapter {
   }
   protected async send(p: AcpPrompt, draining: boolean): Promise<{ disposition: Disposition }> {
     const ctx: PromptContext = { prompt: p, draining, accepted: false, observedOutput: false, attempt: 0 }; this.pending = ctx;
+    let done!: () => void;
+    this.sendDone = new Promise<void>((resolve) => { done = resolve; });
     const conn = this.connection;
+    // A session change stopped this prompt and settled its run: whatever the agent answers later belongs to no run now.
+    const epoch = this.epoch;
+    const stale = () => this.epoch !== epoch;
     let cancelled = false;
     try {
       while (true) {
@@ -203,15 +284,20 @@ export class AcpAdapter implements ProviderAdapter {
           if (!conn || this.connection !== conn || !conn.alive) throw new AgentError(`${this.name} is not running`, true);
           await this.onPromptOutcome({ type: "sending" }, ctx);
           if (this.connection !== conn || !conn.alive) throw new AgentError(`${this.name} is not running`, true);
+          // The session changed before it went out: it goes back to the composer.
+          if (stale()) { this.emit({ type: "editor_text", text: p.text }); return { disposition: "handled" }; }
           this.echoId = p.id;
           this.promptLive = true;
-          const result = await conn.agent.prompt({ sessionId: this.sessionId!, prompt: [{ type: "text", text: p.text }, ...p.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }))] }).finally(() => { this.promptLive = false; });
+          const result = await conn.agent.prompt({ sessionId: this.sessionId!, prompt: [{ type: "text", text: p.text }, ...p.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }))] }).finally(() => { if (!stale()) this.promptLive = false; });
+          if (stale()) return { disposition: "started" };
           ctx.stopReason = result.stopReason;
           const action = await this.onPromptOutcome({ type: "response" }, ctx);
           if (action === "handled") return { disposition: "handled" };
           if (action === "retry") { ctx.attempt++; continue; }
           ctx.accepted = true; this.openRun(); cancelled = result.stopReason === "cancelled"; break;
         } catch (error) {
+          // The prompt of a session this chat left (its run already settled): nothing to report.
+          if (stale()) return { disposition: "started" };
           if (!conn || this.connection !== conn || !conn.alive) {
             if (ctx.accepted || ctx.observedOutput) return { disposition: "started" };
             throw new AgentError(`${this.name} is not running`, true);
@@ -234,13 +320,15 @@ export class AcpAdapter implements ProviderAdapter {
       }
       for (const event of this.mapper.finish()) this.emit(event);
       const gate = await this.waitForGate(conn!, ctx);
+      // A session change stopped this prompt meanwhile: its run is already settled.
+      if (stale() || this.pending !== ctx) return { disposition: "started" };
       this.pending = null;
       if (gate !== "settle") return { disposition: "started" };
       if (!cancelled && !this.aborting && this.queue.length) {
         this.drainQueue();
       } else { this.settleRun(cancelled || this.aborting); this.aborting = false; }
       return { disposition: "started" };
-    } finally { if (this.pending === ctx) { this.pending = null; this.echoId = undefined; } this.aborting = false; }
+    } finally { if (!stale()) { if (this.pending === ctx) { this.pending = null; this.echoId = undefined; } this.aborting = false; } done(); }
   }
   private async waitForGate(conn: AcpConnection, ctx: PromptContext): Promise<"settle" | "hold"> {
     if (this.connection !== conn || !conn.alive) return "hold";
@@ -276,16 +364,195 @@ export class AcpAdapter implements ProviderAdapter {
   async history(): Promise<NormalizedEvent[]> { return this.historyEvents; }
   async dispose(): Promise<void> { const conn = this.connection; this.connection = null; if (conn) await conn.stop(); }
   kill(): void { this.connection?.kill(); }
-  async listModels(): Promise<[]> { return []; }
-  async commands(): Promise<[]> { return []; }
-  async usage(): Promise<{ contextTokens: null; contextWindow: null; percent: null; cost: null }> { return { contextTokens: null, contextWindow: null, percent: null, cost: null }; }
-  async setModel(): Promise<void> { throw new Error("ACP model selection is not available"); }
-  async setThinking(): Promise<void> { throw new Error("ACP thinking selection is not available"); }
-  async setPermissionMode(): Promise<void> { throw new Error("ACP permission modes are not available"); }
-  async compact(): Promise<void> { throw new Error("ACP compaction is not available"); }
-  async newSession(): Promise<void> { throw new Error("ACP session switching is not available"); }
-  async switchSession(): Promise<void> { throw new Error("ACP session switching is not available"); }
-  async setName(): Promise<void> { throw new Error("ACP session renaming is not available"); }
+
+  // ---- settings: the session's configOptions (category model, thought_level, mode) and its modes
+
+  /** Takes the agent's settings (`undefined`: unchanged) and reports what changed. */
+  private applySettings(config: SessionConfigOption[] | null | undefined, modes: SessionModeState | null | undefined): void {
+    if (config) this.config = config;
+    if (modes) this.modes = modes;
+    this.showSettings();
+  }
+  private setCurrentMode(id: string): void {
+    if (this.modes) this.modes = { ...this.modes, currentModeId: id };
+    const option = this.option("mode");
+    if (option) this.config = this.config.map((o) => (o === option ? { ...option, currentValue: id } : o));
+    this.showSettings();
+  }
+  private option(category: string): SelectOption | undefined {
+    return this.config.find((o): o is SelectOption => o.category === category && o.type === "select");
+  }
+  private permissionModes(): PermissionMode[] {
+    const list = this.modes?.availableModes.map((m) => ({ id: m.id, name: m.name, description: m.description })) ?? choices(this.option("mode")).map((c) => ({ id: c.value, name: c.name, description: c.description }));
+    return list.map((m) => ({ id: m.id, label: m.name, ...(m.description ? { description: m.description } : {}) }));
+  }
+  private showSettings(): void {
+    const model = this.option("model"), thought = this.option("thought_level");
+    const changed: Partial<Capabilities> = {};
+    const levels = choices(thought).map((c) => c.value);
+    if (levels.join("\n") !== this.capabilities.thinkingLevels.join("\n")) changed.thinkingLevels = this.capabilities.thinkingLevels = levels;
+    const modes = this.permissionModes();
+    if (JSON.stringify(modes) !== JSON.stringify(this.capabilities.permissionModes)) changed.permissionModes = this.capabilities.permissionModes = modes;
+    if (Object.keys(changed).length) this.live({ type: "capabilities", capabilities: changed });
+    if (model && model.currentValue !== this.shown.model) {
+      this.shown.model = model.currentValue;
+      const name = choices(model).find((c) => c.value === model.currentValue)?.name ?? model.currentValue;
+      this.live({ type: "model", model: { provider: this.id, id: model.currentValue, name, reasoning: Boolean(thought), contextWindow: this.lastUsage?.size ?? null, input: this.capabilities.images ? ["text", "image"] : ["text"] } });
+    }
+    if (thought && thought.currentValue !== this.shown.thinking) { this.shown.thinking = thought.currentValue; this.live({ type: "thinking", level: thought.currentValue }); }
+    const mode = this.modes?.currentModeId ?? this.option("mode")?.currentValue ?? null;
+    if (mode !== (this.shown.mode ?? null)) { this.shown.mode = mode; this.live({ type: "permission_mode", mode }); }
+  }
+  /** Settings are the live chat's, also while a replay is read. */
+  private live(event: NormalizedEvent): void { this.host?.emit(event); }
+  private session(): { conn: AcpConnection; sessionId: string } {
+    if (!this.connection || !this.sessionId) throw new AgentError(`${this.name} is not running`, !this.alive);
+    return { conn: this.connection, sessionId: this.sessionId };
+  }
+  /** The agent refused a change: the chat shows the setting it still has, and says why once. */
+  private refused(what: string, error: unknown, epoch: number): never {
+    const reason = errorText(error);
+    if (this.epoch === epoch) { this.shown = {}; this.showSettings(); } // not for a session left meanwhile
+    this.emit({ type: "notice", level: "warning", source: "host", text: `${this.name} didn't change the ${what}: ${reason}` });
+    throw new Error(reason);
+  }
+  private async setOption(category: string, value: string, what: string): Promise<void> {
+    await this.switching;
+    const option = this.option(category);
+    if (!option) throw new Error(`${this.name} has no ${what} setting`);
+    if (!choices(option).some((c) => c.value === value)) throw new Error(`${this.name} has no ${what} "${value}"`);
+    const { conn, sessionId } = this.session();
+    const epoch = this.epoch;
+    let r;
+    try { r = await conn.agent.setSessionConfigOption({ sessionId, configId: option.id, value }); } catch (error) { this.refused(what, error, epoch); }
+    if (this.epoch === epoch) this.applySettings(r.configOptions, undefined); // not a session left meanwhile
+  }
+  async listModels(): Promise<AgentModel[]> {
+    const reasoning = Boolean(this.option("thought_level"));
+    return choices(this.option("model")).map((c) => ({ provider: this.id, id: c.value, name: c.name, reasoning, enabled: true }));
+  }
+  async setModel(_provider: string, id: string): Promise<void> { await this.setOption("model", id, "model"); }
+  async setThinking(level: string): Promise<void> { await this.setOption("thought_level", level, "thinking level"); }
+  async setPermissionMode(mode: string): Promise<void> {
+    await this.switching;
+    if (!this.modes) return this.setOption("mode", mode, "mode");
+    if (!this.modes.availableModes.some((m) => m.id === mode)) throw new Error(`${this.name} has no mode "${mode}"`);
+    const { conn, sessionId } = this.session();
+    const epoch = this.epoch;
+    try { await conn.agent.setSessionMode({ sessionId, modeId: mode }); } catch (error) { this.refused("mode", error, epoch); }
+    if (this.epoch === epoch) this.setCurrentMode(mode);
+  }
+
+  // ---- commands and usage
+
+  async commands(): Promise<AgentCommand[]> {
+    if (!this.agentCommands && this.alive) {
+      await new Promise<void>((resolve) => {
+        const wake = () => { clearTimeout(timer); this.commandWaiters.delete(wake); resolve(); };
+        const timer = setTimeout(wake, COMMANDS_WAIT_MS);
+        this.commandWaiters.add(wake);
+      });
+    }
+    return (this.agentCommands ?? []).map((c) => ({ name: c.name, description: c.description, source: this.commandSource(c.name) }));
+  }
+  /** The last `usage_update`: the context in use and its size, and the cost when the agent sends one. */
+  async usage(): Promise<UsageInfo> {
+    const u = this.lastUsage;
+    return { contextTokens: u?.used ?? null, contextWindow: u?.size ?? null, percent: u && u.size > 0 ? Math.round((u.used / u.size) * 100) : null, cost: u?.cost ?? null };
+  }
+
+  // ---- sessions
+
+  private async listSessions(scope: SessionScope): Promise<SessionInfo[]> {
+    const conn = this.connection;
+    if (!conn) throw new AgentError(`${this.name} is not running`, true);
+    if (!this.agentCaps?.sessionCapabilities?.list) return [];
+    const { sessions } = await conn.agent.listSessions(scope === "cwd" ? { cwd: this.opts.cwd } : {});
+    const paths = await this.sessionPaths(sessions.map((s) => s.sessionId));
+    const out = sessions.map((s): SessionInfo => {
+      let modified = s.updatedAt ? Date.parse(s.updatedAt) : NaN;
+      if (!Number.isFinite(modified)) { this.host?.log(`${this.name} session ${s.sessionId}: no usable updatedAt (${s.updatedAt ?? "none"})`); modified = 0; }
+      return { path: paths.get(s.sessionId) ?? s.sessionId, name: s.title || null, firstMessage: "", modified, messageCount: null, cwd: s.cwd ?? null };
+    });
+    // Newest first (an unknown time, 0, last); the same time keeps the agent's order (a stable sort).
+    return out.sort((a, b) => b.modified - a.modified);
+  }
+  async newSession(): Promise<void> { await this.change(null); }
+  /** A message can't go to the session being left: it waits for the change, then goes to the session the chat is on (the old one when the change failed). */
+  private switching: Promise<void> | null = null;
+  async switchSession(path: string): Promise<void> {
+    const id = (await this.sessionIdOf(path)) ?? (/^[\w.-]+$/.test(path) ? path : null);
+    if (!id) throw new Error(`"${path}" is not a ${this.name} session`);
+    await this.change(id);
+  }
+  /** Stops this session's run, then loads `id` (null: a new session). The old one is closed when the agent can. */
+  private async change(id: string | null): Promise<void> {
+    if (this.switching) throw new Error(`${this.name} is already switching sessions`);
+    const done = this.changeNow(id);
+    const tracked = done.then(() => {}, () => {}).finally(() => { if (this.switching === tracked) this.switching = null; });
+    this.switching = tracked;
+    return done;
+  }
+  private async changeNow(id: string | null): Promise<void> {
+    const { conn, sessionId: previous } = this.session();
+    await this.stopRun(conn, previous);
+    this.epoch++;
+    const settings = { config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage };
+    this.forgetSession(); this.sessionChanging();
+    this.changing = true;
+    try {
+      if (id) { await this.untilClosed(id); await this.load(conn, id); } else await this.create(conn);
+    } catch (error) {
+      // `sessionId` is still the old one: load and create set it only once the agent answered.
+      ({ config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage } = settings);
+      this.changing = false; // the old session is the chat's again
+      this.sessionOpened();
+      await this.sessionRef(previous).catch(() => null);
+      this.shown = {}; this.showSettings(); // a failed load may have shown its own settings
+      throw error;
+    } finally { this.changing = false; }
+    if (previous !== this.sessionId) this.left.add(previous);
+    this.left.delete(this.sessionId!);
+    await this.announce();
+    if (previous !== this.sessionId && this.agentCaps?.sessionCapabilities?.close) {
+      const closed = conn.agent.closeSession({ sessionId: previous }).catch((error) => this.host?.log(`${this.name} session/close failed: ${errorText(error)}`)).finally(() => { if (this.closing.get(previous) === closed) this.closing.delete(previous); });
+      this.closing.set(previous, closed);
+    }
+  }
+  /** Waits (at most 5 s) for the close of a session this chat left, before it loads it again. */
+  private async untilClosed(id: string): Promise<void> {
+    const closing = this.closing.get(id);
+    if (!closing) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([closing, new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]).finally(() => clearTimeout(timer));
+  }
+  /** Ends the run like Codex's switchSession: cancel and wait for the prompt, settle, drop the queue and asks. */
+  private async stopRun(conn: AcpConnection, sessionId: string): Promise<void> {
+    if (this.pending) {
+      if (!this.aborting) void conn.agent.cancel({ sessionId }); // the core's Esc already cancelled it
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([this.sendDone, new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]).finally(() => clearTimeout(timer));
+      this.pending = null;
+    }
+    for (const [id, ask] of this.asks) { ask.resolve({ outcome: { outcome: "cancelled" } }); this.emit({ type: "ask_closed", id }); }
+    this.asks.clear();
+    this.settleRun(true);
+    if (this.queue.length || this.steering.length) { this.queue = []; this.steering = []; this.queueChanged(); }
+    this.steerAnswers.clear(); this.aborting = false; this.promptLive = false; this.echoId = undefined;
+  }
+  async compact(_instructions?: string): Promise<void> { throw new Error(`${this.name} can't compact here`); }
+  async setName(_name: string): Promise<void> { throw new Error(`${this.name} can't name sessions here`); }
+}
+
+/** A select option's choices, its groups flattened. */
+function choices(option: SelectOption | undefined): SessionConfigSelectOption[] {
+  return (option?.options ?? []).flatMap((o) => ("group" in o ? o.options : [o]));
+}
+
+function errorText(error: unknown): string {
+  const data = (error as { data?: { details?: unknown } } | null)?.data;
+  if (typeof data?.details === "string" && data.details) return data.details;
+  return error instanceof Error ? error.message : String(error);
 }
 
 function versionAtLeast(version: string, minimum: string): boolean {

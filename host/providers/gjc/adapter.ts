@@ -1,9 +1,9 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
-import type { AdapterHost, AdapterOptions, Disposition } from "../types.ts";
+import type { AdapterHost, AdapterOptions, AgentCommand, Disposition, UsageInfo } from "../types.ts";
 import { agentEnv } from "../env.ts";
 import { AcpAdapter, type AcpPrompt, type PromptContext, type PromptErrorAction, type PromptOutcome, type SteerResult } from "../acp/adapter.ts";
-import { control, queuedMessages } from "./sdk.ts";
-import { findSession, sessionIdOf, sessionsDirectory } from "./sessions.ts";
+import { control, query, queuedMessages, type SdkAnswer } from "./sdk.ts";
+import { findSession, findSessions, sessionIdOf, sessionsDirectory } from "./sessions.ts";
 
 export class GjcAdapter extends AcpAdapter {
   private directory = "";
@@ -25,20 +25,88 @@ export class GjcAdapter extends AcpAdapter {
   private lastCancel = 0;
   private restored: string[] = [];
   private restoredUntil = 0;
+  /** GJC compacts on its own (`session_info_update._meta.gjcCompactionState`); a manual one reports itself. */
+  private autoCompacting = false;
+  private manualCompacting = false;
+  /** usage.get's last refusal, logged once. */
+  private costRefusal: string | null = null;
 
   constructor(opts: AdapterOptions) {
     super({ id: "gjc", name: "GJC", command: opts.command, args: ["--mode", "acp"], env: {}, clientMeta: { gjc: { permissionHandling: "prompt" } }, minimumVersion: "0.21.0" }, opts);
     this.capabilities.tui = false;
+    this.capabilities.compact = true; this.capabilities.rename = true;
   }
   async start(session: string | null, host: AdapterHost) {
     const dir = sessionsDirectory(this.opts.cwd, agentEnv(this.spec.env));
     this.directory = dir.path; this.file = null; this.opened = false; this.suppressed = true;
     this.lastSearch = 0; this.warnedAmbiguous = false; this.hint = null; this.hintRun = false; this.cancelNoticed = false;
     this.restored = []; this.restoredUntil = 0; this.retrying = false; this.retryCancelled = false; this.promptInFlight = false; this.lastCancel = 0;
+    this.autoCompacting = false; this.manualCompacting = false; this.costRefusal = null;
+    this.capabilities.compact = true; this.capabilities.rename = true; this.capabilities.cost = false;
     host.log(`GJC sessions directory ${dir.path} (${dir.rule})`);
     return super.start(session, host);
   }
   protected sessionOpened(): void { this.opened = true; this.suppressed = true; }
+  protected sessionChanging(): void {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null; this.file = null; this.opened = false; this.suppressed = true; this.warnedAmbiguous = false;
+    this.hint = null; this.hintRun = false; this.cancelNoticed = false; this.restored = []; this.restoredUntil = 0;
+    this.retrying = false; this.retryCancelled = false; this.promptInFlight = false; this.cancelSentAfterRestore = false; this.lastCancel = 0;
+    if (this.autoCompacting) this.emit({ type: "compaction", phase: "end", outcome: "aborted" });
+    this.autoCompacting = false;
+    for (const wake of [...this.waiters]) wake();
+  }
+  /** GJC lists its skills as `skill:<name>`. */
+  protected commandSource(name: string): AgentCommand["source"] { return name.startsWith("skill:") ? "skill" : "extension"; }
+  protected async sessionPaths(ids: string[]): Promise<Map<string, string | null>> {
+    const found = findSessions(this.directory, ids, this.opts.cwd);
+    return new Map(ids.map((id) => [id, found.get(id)?.file ?? null]));
+  }
+  /** An SDK operation GJC doesn't have (-32601) turns its capability off, with a notice; another refusal is an error. */
+  private async sdk(answer: Promise<SdkAnswer>, capability: "compact" | "rename", what: string): Promise<Record<string, unknown>> {
+    const r = await answer;
+    if (r.ok) return r.result;
+    if (r.code === "method_not_found") {
+      this.capabilities[capability] = false;
+      this.emit({ type: "capabilities", capabilities: { [capability]: false } });
+      this.emit({ type: "notice", level: "warning", source: "host", text: `This GJC can't ${what} from the chat.` });
+    }
+    throw new Error(r.message ? `${r.code}: ${r.message}` : r.code);
+  }
+  /** `compaction.run` answers when the compaction is done; it takes no instructions. */
+  async compact(): Promise<void> {
+    if (!this.connection || !this.sessionId) throw new Error("GJC is not running");
+    this.manualCompacting = true;
+    this.emit({ type: "compaction", phase: "start", reason: "manual" });
+    try {
+      await this.sdk(control(this.connection.agent, this.sessionId, "compaction.run", {}), "compact", "compact the conversation");
+      this.emit({ type: "compaction", phase: "end", outcome: "done" });
+    } catch (error) {
+      this.emit({ type: "compaction", phase: "end", outcome: "failed", error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally { this.manualCompacting = false; }
+  }
+  async setName(name: string): Promise<void> {
+    if (!this.connection || !this.sessionId) throw new Error("GJC is not running");
+    await this.sdk(control(this.connection.agent, this.sessionId, "session.rename", { name }), "rename", "name sessions");
+    this.emit({ type: "session", name: name || null });
+  }
+  /** The context from the last `usage_update`; the session's cost from `usage.get` when GJC gives one. */
+  async usage(): Promise<UsageInfo> {
+    const usage = await super.usage();
+    if (!this.connection || !this.sessionId) return usage;
+    const r = await query(this.connection.agent, this.sessionId, "usage.get").catch((error) => ({ ok: false as const, code: "error", message: String(error) }));
+    const items = r.ok ? (r.result.page as { items?: unknown } | undefined)?.items : undefined;
+    const cost = Array.isArray(items) && typeof items[0]?.cost === "number" ? items[0].cost as number : null;
+    if (cost === null) {
+      if (this.capabilities.cost) { this.capabilities.cost = false; this.emit({ type: "capabilities", capabilities: { cost: false } }); }
+      const why = r.ok ? "no cost" : r.code;
+      if (why !== this.costRefusal) { this.costRefusal = why; this.host?.log(`GJC usage.get gave no cost${r.ok ? "" : ` (${r.code})`}`); }
+      return usage;
+    }
+    if (!this.capabilities.cost) { this.capabilities.cost = true; this.emit({ type: "capabilities", capabilities: { cost: true } }); }
+    return { ...usage, cost };
+  }
   /** `turn.steer` into the running turn; `clientRef` is the host's message id (a UUID, never GJC's reserved `abort-and-prompt:`). */
   protected async steer(text: string, id: string): Promise<SteerResult> {
     if (!this.connection || !this.sessionId) return { status: "rejected", reason: "GJC is not running" };
@@ -82,6 +150,7 @@ export class GjcAdapter extends AcpAdapter {
   protected onConnectionClosed(): void { for (const wake of [...this.waiters]) wake(); }
   protected onUpdate(update: SessionUpdate): void {
     super.onUpdate(update);
+    if (!this.replaying && update.sessionUpdate === "session_info_update") this.onCompactionMeta(update._meta);
     if (this.retryCancelled && this.pending?.accepted && !this.cancelSentAfterRestore && this.connection && this.sessionId) {
       this.cancelSentAfterRestore = true;
       void this.connection.agent.cancel({ sessionId: this.sessionId });
@@ -108,6 +177,18 @@ export class GjcAdapter extends AcpAdapter {
       this.hintRun = false;
       if (this.queue.length && !this.aborting) this.drainQueue();
       else { this.settleRun(false); this.aborting = false; }
+    }
+  }
+  /** GJC's own compaction (context full, overflow, idle) as `compaction` events. */
+  private onCompactionMeta(meta: Record<string, unknown> | null | undefined): void {
+    const state = meta?.gjcCompactionState;
+    if (state === "start" && !this.autoCompacting && !this.manualCompacting) {
+      this.autoCompacting = true;
+      this.emit({ type: "compaction", phase: "start", reason: meta?.gjcCompactionTrigger === "overflow" ? "overflow" : "auto" });
+    } else if (state === "end" && this.autoCompacting) {
+      this.autoCompacting = false;
+      const error = typeof meta?.gjcCompactionErrorMessage === "string" ? meta.gjcCompactionErrorMessage : undefined;
+      this.emit(meta?.gjcCompactionAborted === true ? { type: "compaction", phase: "end", outcome: "aborted" } : error ? { type: "compaction", phase: "end", outcome: "failed", error } : { type: "compaction", phase: "end", outcome: "done" });
     }
   }
   private async waitForIdle(ms: number): Promise<boolean> {
