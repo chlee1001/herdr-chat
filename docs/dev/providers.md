@@ -181,11 +181,10 @@ chat shows a session, its terminal carries the `gjc.session`, `gjc.cwd`,
 name changes, and cleared when the chat lets go of the session (a hand-off, a
 session switch, shutdown). Without `HC_TERMINAL_ID`, or when `hc label` fails,
 nothing is labelled (a failure is one log line). The chat does not publish
-`agents.subagents`. There is no `sessionHolder`: whether a GJC process outlives
-the chat's dispose and keeps the session file open has not been checked against a
-live GJC, so a second process on the session is not reported on the conflict
-screen. Checking it (`lsof` on the session file after a dispose) decides whether
-one is needed.
+`agents.subagents`. There is no `sessionHolder`: a live GJC 0.22 started as the chat starts it
+(`gjc --mode acp`) is one process with no children, and none of it is alive after
+`dispose()`, so no process outlives the chat to hold the session file. (The probe
+sent no prompt, so it wrote no session file.)
 
 | GJC capability | Support |
 |---|---|
