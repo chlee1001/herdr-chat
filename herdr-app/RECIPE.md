@@ -29,7 +29,7 @@ Tell the person first what it does:
   checks it against the release's `SHA256SUMS`, and unpacks it to
   `~/.local/share/herdr-chat/<version>`, with a `current` link to it;
 - needs macOS, Herdr 0.1.12 or later with `hc` on `PATH`, Node 20 or
-  later, and at least one agent on `PATH`: `pi`, `claude` or `codex`. A
+  later, and at least one agent on `PATH`: `pi`, `claude`, `codex` or `gjc`. A
   Herdr newer than the tested 0.1.14 gets a warning; an older one than
   0.1.12 is refused;
 - adds the mods `chat`, `new-chat`, `chat-agents` and `chat-menu`;
@@ -39,6 +39,9 @@ Tell the person first what it does:
   says what that costs;
 - binds ⌘I to the launcher (⌘J A when ⌘I is taken). It never replaces a key
   of the person's unless they asked for that key;
+- records each agent it found, and a `PATH` for them (a script's `#!/usr/bin/env`
+  interpreter too, as `bun` for `gjc`), in `mods/chat/config.json`: a core
+  terminal lacks the login `PATH`;
 - writes the `hc` templates `pi-chat`, `claude-chat` and `codex-chat`, and a
   short marked note in each installed agent's instruction file
   (`~/.pi/agent/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`)
@@ -144,7 +147,7 @@ install changed, and removes the unpacked release.
 
 - `herdr-app check` passes for each installed mod, and `herdr-app status`
   shows no errors.
-- ⌘I opens the launcher, and P, C and X open a chat with that agent in a
+- ⌘I opens the launcher, and P, C, X and G open a chat with that agent in a
   new tab.
 - A prompt streams an answer; a tool call shows its card and an approval
   card answers with 1, 2 or 3; Enter while it works steers, ⌥Enter queues a

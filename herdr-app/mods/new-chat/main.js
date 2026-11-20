@@ -1,10 +1,10 @@
 // new-chat: the "New chat with…" launcher, and the commands that open chats.
 //
 // As an overlay (`mod.open:new-chat`, the "open" key: cmd-i): Pi, Claude
-// Code or Codex, then a new tab with the chat (mod chat, props {chat, cwd,
+// Code, Codex or GJC, then a new tab with the chat (mod chat, props {chat, cwd,
 // provider}) for the focused terminal's folder (else the space's). Keys:
-// p / c / x pick (only an agent that is installed; the launcher has no text
-// field, so letters are always picks), 1/2/3 too, ↑↓ move, Enter opens the
+// p / c / x / g pick (only an agent that is installed; the launcher has no text
+// field, so letters are always picks), 1/2/3/4 too, ↑↓ move, Enter opens the
 // selected one (the last choice, kept in <appHome>/data/herdr-chat/launcher.json),
 // Esc closes. Its commands: `new-chat.pick:<provider>`, `new-chat.enter`.
 //
@@ -12,7 +12,7 @@
 // install/layout.ts): always on screen at no size, so it takes the commands a
 // key or another mod runs while no launcher is open:
 // - `new-chat.open`: the launcher (as mod.open:new-chat; again: closes it);
-// - `new-chat.pi`, `new-chat.claude`, `new-chat.codex`: that agent's chat, in a new tab;
+// - `new-chat.pi`, `new-chat.claude`, `new-chat.codex`, `new-chat.gjc`: that agent's chat, in a new tab;
 // - `new-chat.continue:<terminal>`: chat-menu's Continue as chat (an agent's
 //   TUI handed over to a chat on its session, see continueAsChat);
 //   `new-chat.continue`: the same on the focused terminal (the "continue" key);
@@ -32,6 +32,7 @@ const CHOICES = [
   { id: "pi", label: "Pi", icon: "pi", tint: true, letter: "p" },
   { id: "claude", label: "Claude Code", icon: "claude", letter: "c" },
   { id: "codex", label: "Codex", icon: "codex", letter: "x" },
+  { id: "gjc", label: "GJC", icon: "gjc", letter: "g" },
 ];
 const PREFS = () => `${appHome()}/data/herdr-chat/launcher.json`;
 
@@ -52,6 +53,7 @@ const base = (p) => String(p ?? "").split("/").pop();
 const NAMES = Object.fromEntries(CHOICES.map((c) => [c.id, c.label]));
 
 // Herdr's names for the agents (its status reports Claude Code as claude-code) → ours.
+// GJC joins with its TUI hand-off (F5): until then its TUI can't continue as a chat.
 const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex" };
 
 /** The agent a terminal runs, as Herdr reports it (an id of CHOICES), else null. */
@@ -262,7 +264,16 @@ export default class NewChat extends View {
     cx.spawn(async (cx) => {
       try {
         const known = await knownAgents();
-        this.installed = Object.fromEntries(CHOICES.map((c) => [c.id, known.find((a) => a.key === c.id)?.installed !== false]));
+        // An agent Herdr doesn't ship (GJC): installed when install found it or the person's settings name its command.
+        const found = async (id) => {
+          const read = async (p) => { try { return JSON.parse((await readTextFile(p)) ?? "{}") ?? {}; } catch { return {}; } };
+          const [cfg, mine] = [await read(`${appHome()}/mods/chat/config.json`), await read(`${appHome()}/data/herdr-chat/settings.json`)];
+          return typeof cfg[id] === "string" || typeof mine[id]?.command === "string";
+        };
+        this.installed = Object.fromEntries(await Promise.all(CHOICES.map(async (c) => {
+          const k = known.find((a) => a.key === c.id);
+          return [c.id, k ? k.installed !== false : await found(c.id)];
+        })));
       } catch {}
       cx.notify();
     });

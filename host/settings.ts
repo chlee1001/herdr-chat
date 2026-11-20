@@ -1,12 +1,12 @@
 // What a chat runs an agent with: what install found (mods/chat/config.json:
-// the host, node, hc and each agent's command) with the person's settings over
+// the host, node, hc, each agent's command and a PATH for the agents) with the person's settings over
 // it (<app home>/data/herdr-chat/settings.json, which install never writes).
 // The chat mod reads the same two files the same way (herdr-app/mods/chat/connection.js
 // readConfig); README "Configuration" documents the person's file.
 //
 //   {
 //     "env": {"KEY": "value"},                  every agent's environment
-//     "<agent>": {                              pi, claude, codex
+//     "<agent>": {                              pi, claude, codex, gjc
 //       "command": "/path/to/agent",            instead of what install found
 //       "args": ["--model", "…"],               after the agent's own arguments
 //       "env": {"KEY": "value"},                this agent's environment
@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type AgentSettings = { command: string | null; args: string[]; env: Record<string, string>; tui: string[] | null };
-export type ChatConfig = { host: string | null; node: string | null; hc: string | null; agent(id: string): AgentSettings };
+export type ChatConfig = { host: string | null; node: string | null; hc: string | null; path: string | null; agent(id: string): AgentSettings };
 
 type Rec = Record<string, any>;
 
@@ -41,7 +41,7 @@ const strings = (v: unknown): Record<string, string> =>
 export function chatConfig(install: Rec, mine: Rec): ChatConfig {
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
-    host: str(install.host), node: str(install.node), hc: str(install.hc),
+    host: str(install.host), node: str(install.node), hc: str(install.hc), path: str(install.path),
     agent(id) {
       const a: Rec = mine[id] && typeof mine[id] === "object" ? mine[id] : {};
       return { command: str(a.command) ?? str(install[id]), args: list(a.args) ?? [], env: { ...strings(mine.env), ...strings(a.env) }, tui: list(a.tui) };

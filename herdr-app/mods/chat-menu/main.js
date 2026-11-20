@@ -24,7 +24,8 @@ function chatOf(p) {
 }
 
 const word = (s) => (typeof s === "string" ? s : s?.state ?? null);
-// Herdr's names for the agents (its status reports Claude Code as claude-code) → ours. A copy of new-chat's.
+// Herdr's names for the agents (its status reports Claude Code as claude-code) → ours.
+// GJC joins this menu with its TUI hand-off (F5).
 const HERDR_AGENTS = { pi: "pi", claude: "claude", "claude-code": "claude", codex: "codex" };
 const agentOf = (t) => [t?.program?.key, t?.app, t?.status?.app, t?.report?.app, t?.agent].map((a) => HERDR_AGENTS[a]).find(Boolean) ?? null;
 

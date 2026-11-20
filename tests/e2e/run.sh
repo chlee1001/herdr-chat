@@ -16,7 +16,7 @@ set -euo pipefail
 ART_ARG="${1:-}"
 shift || true
 FLOWS="${*:-}"
-# LIVE=1 [PROVIDER=pi|claude|codex]: one flow on that real agent (live, live-claude, live-codex).
+# LIVE=1 [PROVIDER=pi|claude|codex|gjc]: one flow on that real agent (live, live-claude, live-codex, live-gjc).
 [ -z "${LIVE:-}" ] || FLOWS="${FLOWS:-live$([ "${PROVIDER:-pi}" = pi ] || echo "-$PROVIDER")}"
 . "$(dirname "$0")/lib.sh" "$ART_ARG"
 FAKE="$REPO/tests/fake-pi"
@@ -37,17 +37,22 @@ while IFS= read -r line; do [ "\$line" = q ] && exit 0; echo "> \$line"; done
 EOF
 chmod +x "$BASE/fake-tui.sh"
 if [ -n "${LIVE:-}" ]; then
-  # Real agents with the person's own logins: Pi and Claude on their cheapest models, Codex picked in the chat (luna, low).
+  # Real agents with the person's own logins: Pi and Claude on their cheapest models, Codex picked in the chat (luna, low), GJC on its default.
   TUI='"tui": ["'"$BASE"'/fake-tui.sh"]'
   CONFIG='{"pi": {'"$TUI"', "args": ["--model", "anthropic/claude-haiku-4-5", "--session-dir", "'"$BASE"'/pi-sessions"]},
     "claude": {"args": ["--model", "haiku"]}}'
 else
-  # Every provider runs on the real host, with a fake agent: fake-pi, fake-claude, fake-codex.
+  # Every provider runs on the real host, with a fake agent: fake-pi, fake-claude, fake-codex, fake-acp.
   # Each TUI hand-off runs the fake TUI with the adapter's arguments (`--session <f>`, `--resume <id>`, `resume --no-daemon <id>`).
+  mkdir -p "$BASE/guard-bin"
+  printf '#!/bin/sh\ntouch "%s/real-gjc-called"\nexit 97\n' "$BASE" >"$BASE/guard-bin/gjc"
+  chmod +x "$BASE/guard-bin/gjc"
+  export PATH="$BASE/guard-bin:$PATH"
   TUI='"tui": ["'"$BASE"'/fake-tui.sh"]'
   CONFIG='{"pi": {"command": "'"$FAKE"'/fake-pi.mjs", '"$TUI"'}, "claude": {"command": "'"$REPO"'/tests/fake-claude/fake-claude.mjs", '"$TUI"'},
     "codex": {"command": "'"$REPO"'/tests/fake-codex/fake-codex.mjs", '"$TUI"'},
-    "env": {"CLAUDE_CONFIG_DIR": "'"$BASE"'/claude-config", "FAKE_CLAUDE_LOG": "'"$BASE"'/fake-claude.log", "FAKE_CLAUDE_SPEED": "2", "HERDR_CHAT_CLAUDE_POLL_MS": "150",
+    "gjc": {"command": "'"$REPO"'/tests/fake-acp/fake-acp.mjs"},
+    "env": {"FAKE_ACP_MODE": "'"$REPO"'/tests/fake-acp/gjc-mode.mjs", "FAKE_ACP_LOG": "'"$BASE"'/fake-acp.log", "FAKE_ACP_STORE": "'"$BASE"'/fake-acp-store", "FAKE_ACP_SCENARIO": "'"$REPO"'/tests/fake-acp/scenarios/basic.json", "GJC_CODING_AGENT_DIR": "'"$BASE"'/gjc-agent", "CLAUDE_CONFIG_DIR": "'"$BASE"'/claude-config", "FAKE_CLAUDE_LOG": "'"$BASE"'/fake-claude.log", "FAKE_CLAUDE_SPEED": "2", "HERDR_CHAT_CLAUDE_POLL_MS": "150",
             "FAKE_CODEX_HOME": "'"$BASE"'/codex-home", "FAKE_CODEX_LOG": "'"$BASE"'/fake-codex.log", "FAKE_CODEX_SPEED": "2", "FAKE_PI_SPEED": "2", "FAKE_PI_SCENARIO": "'"$SCEN"'/tools.json", "FAKE_PI_LOG": "'"$BASE"'/fake-pi.log"}}'
 fi
 install_mods "$CONFIG"
@@ -109,7 +114,7 @@ open_launcher() {
 # The launcher's chooser, then choose with a key ($1: enter, or a digit), else (a dropped key) by its
 # command, and the next check is a SKIP (by_command).
 launch_pick() {
-  open_launcher "the launcher shows its chooser (Pi / Claude Code / Codex)"
+  open_launcher "the launcher shows its chooser (Pi / Claude Code / Codex / GJC)"
   if [ "$1" = enter ]; then keys enter; else keys "text:$1"; fi
   until_ '! overlay_open new-chat' 3 || { by_command "the chooser didn't take $1"; do_ new-chat.enter; }
   expect '! overlay_open new-chat' "the chooser took $1 (it closes)" 3

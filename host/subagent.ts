@@ -62,6 +62,10 @@ export function planSubagent(o: { args: Args; env: NodeJS.ProcessEnv; cwd: strin
   const extra: Record<string, string> = {};
   for (const [k, v] of Object.entries(settings.env)) if (env[k] === undefined) extra[k] = v;
   if (config.node && env.HERDR_CHAT_NODE === undefined) extra.HERDR_CHAT_NODE = config.node;
+  // The PATH install recorded (a script agent's interpreter, as `bun` for gjc), as a chat's host
+  // gets it from the mod: a core terminal's own PATH lacks it. A PATH in the settings env wins.
+  const path = settings.env.PATH ?? config.path;
+  if (path) extra.PATH = path;
   return {
     chat: o.chat, appHome, stateDir, provider,
     terminal: env.HC_TERMINAL_ID || null,

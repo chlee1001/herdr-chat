@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install herdr-chat (Pi, Claude Code and Codex as a native GUI chat) into the Herdr desktop app.
+# Install herdr-chat (Pi, Claude Code, Codex and GJC as a native GUI chat) into the Herdr desktop app.
 # The root install.sh runs this: from a clone (./install.sh), or from a release it
 # downloaded and unpacked (the curl one-liner).
 #
@@ -16,16 +16,17 @@
 #                      instruction files (--no-templates: the same)
 #
 # Keys: the "global" part of data/herdr-chat/keys.json in the app home (KEYS.md):
-#   {"global": {"open": "cmd-i", "pi": null, "claude": null, "codex": null}}
+#   {"global": {"open": "cmd-i", "pi": null, "claude": null, "codex": null, "gjc": null}}
 #   open: the "New chat with…" launcher (default cmd-i; cmd-j a when cmd-i is
-#   taken); pi/claude/codex: that agent's chat at once (unbound by default).
+#   taken); pi/claude/codex/gjc: that agent's chat at once (unbound by default).
 #   A chord you choose replaces what had it; uninstall puts that back.
 #
 # What it does, in the app home ($HERDR_APP_HOME, else ~/.config/herdr-app):
 #   - copies every folder in herdr-app/mods/ into mods/ (only over folders it made itself,
 #     marked with a .herdr-chat file) and writes mods/chat/config.json
-#     (absolute paths of the host, node, hc and each agent it finds on PATH,
-#     herdr-chat's version, the host's build, and how it was installed (release
+#     (absolute paths of the host, node, hc and each agent it finds on PATH; a PATH
+#     for chats and updates with their folders and each script agent's #!/usr/bin/env
+#     interpreter's, since a core terminal lacks the login PATH; herdr-chat's version, the host's build, and how it was installed (release
 #     or clone, and the command that updates it); your own settings go in data/herdr-chat/settings.json,
 #     which install never writes: README "Configuration")
 #   - checks Herdr's and herdr-core's versions against the tested ones
@@ -75,7 +76,7 @@ die() { printf 'herdr-chat: %s\n' "$*" >&2; exit 1; }
 UNINSTALL=0 LAYOUT=1 SUBAGENTS=1 TAKE=()
 TPL_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates"
 TPL_MARK="installed-by: herdr-chat"
-PROVIDERS="pi claude codex"
+PROVIDERS="pi claude codex gjc"
 while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) UNINSTALL=1 ;;
@@ -100,7 +101,7 @@ ours() { [ ! -e "$1" ] || [ -f "$1/$MARK" ]; }
 if [ "$UNINSTALL" = 1 ]; then
   # The layout first: it must stop naming chat-agents / chat-menu before they go.
   node "$ROOT/install/layout.$EXT" uninstall "$APP_HOME" || die "the layout couldn't be restored; nothing else removed"
-  for p in $PROVIDERS; do
+  for p in pi claude codex; do
     f="$TPL_DIR/$p-chat.md"
     if [ -f "$f" ] && grep -qx "$TPL_MARK" "$f"; then rm -f "$f"; say "removed $f"; fi
   done
@@ -131,7 +132,7 @@ for p in $PROVIDERS; do
   printf -v "BIN_$p" '%s' "$path"
   [ -z "$path" ] || AGENTS_FOUND+=("$p")
 done
-[ "${#AGENTS_FOUND[@]}" -gt 0 ] || die "no agent on PATH: install Pi (pi), Claude Code (claude) or Codex (codex) first"
+[ "${#AGENTS_FOUND[@]}" -gt 0 ] || die "no agent on PATH: install Pi (pi), Claude Code (claude), Codex (codex) or GJC (gjc) first"
 APP="${HERDR_APP_BIN:-$(command -v herdr-app || true)}"
 [ -n "$APP" ] || for c in /Applications/*.app/Contents/MacOS/Herdr; do [ -x "$c" ] && APP="$c" && break; done
 [ -n "$APP" ] || die "herdr-app not found (set HERDR_APP_BIN)"
@@ -174,11 +175,24 @@ BUILD=$("$NODE" "$ROOT/host/main.$EXT" build | "$NODE" -e 'process.stdout.write(
 # release: installed by the one-liner (install.sh gives its command), which can update it;
 # clone: anything else (./install.sh in a checkout, an unpacked release run in place).
 CHANNEL=$([ -n "${HERDR_CHAT_INSTALL_CMD:-}" ] && [ "$EXT" = js ] && echo release || echo clone)
+# Resolve env-script interpreters on the login PATH before the core starts a host.
+INTERPRETERS=()
+for p in "${AGENTS_FOUND[@]}"; do
+  var="BIN_$p"; file="${!var}"; line=
+  { IFS= read -r line < "$file"; } 2>/dev/null || true
+  if [[ "$line" =~ ^#![[:space:]]*/usr/bin/env[[:space:]]+(-S[[:space:]]+)?([^[:space:]]+) ]]; then
+    # Only a file found on PATH (an alias or function name would put "." in it).
+    interpreter="$(type -P "${BASH_REMATCH[2]}" || true)"
+    [ -z "$interpreter" ] || INTERPRETERS+=("$interpreter")
+  fi
+done
 # installedAt: a chat whose host started before it, on another build, runs older code.
-"$NODE" -e 'const [path, host, node, hc, version, build, channel, update, pi, claude, codex] = process.argv.slice(1);
-const agents = Object.fromEntries(Object.entries({ pi, claude, codex }).filter(([, v]) => v));
-require("fs").writeFileSync(path, JSON.stringify({ host, node, hc, version, build, installedAt: Date.now(), channel, update, ...agents }, null, 2) + "\n")' \
-  "$STAGE/chat/config.json" "$LINK/bin/herdr-chat-host" "$NODE" "$HC" "$VERSION" "$BUILD" "$CHANNEL" "$INSTALL_CMD" "$BIN_pi" "$BIN_claude" "$BIN_codex"
+"$NODE" -e 'const [file, host, node, hc, version, build, channel, update, pi, claude, codex, gjc, ...interpreters] = process.argv.slice(1);
+const agents = Object.fromEntries(Object.entries({ pi, claude, codex, gjc }).filter(([, v]) => v));
+const { dirname } = require("path");
+const path = [...new Set([node, hc, ...Object.values(agents), ...interpreters].map(dirname).concat(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))].join(":");
+require("fs").writeFileSync(file, JSON.stringify({ host, node, hc, version, build, installedAt: Date.now(), channel, update, ...agents, path }, null, 2) + "\n")' \
+  "$STAGE/chat/config.json" "$LINK/bin/herdr-chat-host" "$NODE" "$HC" "$VERSION" "$BUILD" "$CHANNEL" "$INSTALL_CMD" "$BIN_pi" "$BIN_claude" "$BIN_codex" "$BIN_gjc" "${INTERPRETERS[@]+"${INTERPRETERS[@]}"}"
 for m in "${MODS[@]}"; do
   "$APP" check "$STAGE/$m" >/dev/null 2>&1 || { "$APP" check "$STAGE/$m" || true; die "mods/$m failed herdr-app check; nothing installed"; }
 done
@@ -220,6 +234,7 @@ if [ "$SUBAGENTS" = 1 ]; then
   mkdir -p "$TPL_DIR"
   wrote=()
   for p in "${AGENTS_FOUND[@]}"; do
+    [ "$p" != gjc ] || continue
     f="$TPL_DIR/$p-chat.md"
     if [ -f "$f" ] && ! grep -qx "$TPL_MARK" "$f"; then say "$f exists and isn't herdr-chat's; not touching it"; continue; fi
     wrote+=("$p-chat")
@@ -233,7 +248,7 @@ $TPL_MARK
 You are a sub-agent: another agent started you with hc run and gave you the task below. Stay within it. The person may also write to you here.
 TPL
   done
-  say "templates: $(for p in "${AGENTS_FOUND[@]}"; do printf '%s-chat ' "$p"; done)in $TPL_DIR"
+  say "templates: ${wrote[*]:-none} in $TPL_DIR"
   S_TEMPLATES="${wrote[*]:-none (those files belong to something else)} in $TPL_DIR"
   if out=$("$NODE" "$ROOT/install/instructions.$EXT" install "$APP_HOME"); then
     printf '%s\n' "$out"

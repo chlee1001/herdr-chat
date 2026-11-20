@@ -48,7 +48,7 @@ tests/e2e/run.sh            # the mods in a private Herdr app
     stale.
   - `E2E_VISUAL=1` runs the whole suite in visual passes, for a full set of
     screenshots.
-  - `LIVE=1 PROVIDER=pi|claude|codex tests/e2e/run.sh` runs one flow on the
+  - `LIVE=1 PROVIDER=pi|claude|codex|gjc tests/e2e/run.sh` runs one flow on the
     real CLI, on its cheapest model, with your login.
 
 Write tests as end-to-end scenarios a person would run, and check what they

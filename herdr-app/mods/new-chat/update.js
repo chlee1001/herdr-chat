@@ -127,14 +127,11 @@ export async function checkRelease({ now = false } = {}) {
 
 /**
  * What the update terminal runs: config.json's update command for `version`, with a
- * PATH that has the node, hc and agents the install found (a core terminal lacks the
- * login PATH, and the install looks them up again). The version is an argument, never
+ * PATH recorded by install (a core terminal lacks the login PATH). The version is an argument, never
  * part of the command text.
  */
 function updateArgv(cfg, version) {
-  const dirs = [cfg.node, cfg.hc, cfg.pi, cfg.claude, cfg.codex].filter((p) => typeof p === "string" && p.includes("/")).map((p) => p.slice(0, p.lastIndexOf("/")));
-  const path = [...new Set([...dirs, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])].join(":");
-  return ["/usr/bin/env", `PATH=${path}`, `HERDR_APP_HOME=${appHome()}`, "sh", "-c", `${cfg.update} --version "$1"`, "sh", version];
+  return ["/usr/bin/env", `PATH=${cfg.path}`, `HERDR_APP_HOME=${appHome()}`, "sh", "-c", `${cfg.update} --version "$1"`, "sh", version];
 }
 
 /** The dialog (an overlay of this mod). */
