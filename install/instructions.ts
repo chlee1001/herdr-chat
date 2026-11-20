@@ -2,7 +2,8 @@
 // Claude Code's CLAUDE.md, Codex's AGENTS.md. It tells an agent that runs in
 // Herdr to start its Pi, Claude Code or Codex sub-agents with the hc
 // templates install.sh writes (pi-chat, claude-chat, codex-chat), so the
-// person can open them as chats.
+// person can open them as chats. GJC runs its own sub-agents with its `task`
+// tool, so it gets no note.
 //
 // The note is one block between marker lines. A file is written only for an
 // agent whose config folder exists (created when missing). Install again

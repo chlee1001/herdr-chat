@@ -98,6 +98,27 @@ if want v3 || want launcher; then
   expect '[ -n "$(chat_of claude)" ] && [ "$(chat_of claude)" != "$FIRST" ]' "Enter opens the default, the last choice: another Claude Code chat" 15
 fi
 
+if want v3 || want launcher-gjc; then
+  step "launcher: g opens GJC and Enter repeats the last choice"
+  open_launcher "the chooser opens"
+  keys "text:g"
+  until_ '! overlay_open new-chat' 3 || { by_command "g didn't land"; do_ new-chat.pick:gjc; }
+  expect '! overlay_open new-chat' "g picks GJC" 3
+  expect '[ -n "$(chat_of gjc)" ]' "a GJC chat opened" 15
+  CHAT=$(chat_of gjc)
+  expect '[ "$(reg "$CHAT" provider)" = gjc ]' "the host runs provider gjc" 20
+  ready
+  send_text "hi"
+  expect 'grep -q "session/prompt" "$BASE/fake-acp.log"' "the prompt reached fake GJC" 15
+  expect '[ "$(phase)" = idle ]' "fake GJC settled" 15
+  expect 'grep -Fq "provider=gjc cmd=$REPO/tests/fake-acp/fake-acp.mjs" "$STATE/logs/$CHAT.log"' "the host used fake GJC" 10
+  FIRST=$CHAT
+  launch_pick enter
+  expect '[ -n "$(chat_of gjc)" ] && [ "$(chat_of gjc)" != "$FIRST" ]' "Enter opens another GJC chat" 15
+  [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["last"])' "$STATE/launcher.json")" = gjc ] && ok "the launcher remembers GJC" || fail "launcher.json"
+  [ ! -e "$BASE/real-gjc-called" ] && ok "the real GJC was not called" || fail "the GJC guard was called"
+fi
+
 # --- Claude Code (real host, fake-claude) ------------------------------------------------
 if want v3 || want claude; then
   step "claude: identity and the footer from its capabilities"
@@ -542,7 +563,7 @@ PY
   plan_done strip-codex-done
 fi
 
-# --- LIVE=1 PROVIDER=claude|codex: the real agent, through the launcher --------------------
+# --- LIVE=1 PROVIDER=claude|codex|gjc: the real agent, through the launcher --------------------
 # A temp project (the run's), the person's own login. The agent is asked to run
 # `touch live-ok.txt && ls` (ls alone is read-only: it runs without asking);
 # the permission card is answered Allow once from the keyboard.
@@ -576,6 +597,12 @@ sys.exit(0 if tools and tools[-1]["status"] == "done" and "live-ok.txt" in tools
 PY
   cmd "toggle:$(d "[i['id'] for i in d['items'] if i['kind']=='tool'][-1]")"
   shot live-claude-3-answered 0.6
+fi
+
+if want live-gjc && [ -n "${LIVE:-}" ]; then
+  live_provider gjc 4
+  send_text "Reply with just the word done."
+  expect '[ "$(phase)" = idle ] && [ "$(d "len([i for i in d[\"items\"] if i[\"kind\"] == \"assistant\"])")" -gt 0 ]' "GJC answered and settled" 180
 fi
 
 if want live-codex && [ -n "${LIVE:-}" ]; then

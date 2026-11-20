@@ -57,8 +57,8 @@ https://github.com/user-attachments/assets/cefe4c53-19f6-4c3b-8188-f8480f4c2816
 - The **Herdr desktop app** (0.1.12 or later), and herdr-core (`hc`) on
   `PATH`.
 - **Node 20** or later.
-- At least one agent on `PATH`, signed in: `pi` (1.5 or later), `claude` or
-  `codex`.
+- At least one agent on `PATH`, signed in: `pi` (1.5 or later), `claude`,
+  `codex` or `gjc` (0.21.0 or later, run as `gjc --mode acp`).
 - macOS.
 
 ## Install
@@ -82,7 +82,8 @@ window to "add the mod at github.com/chlee1001/herdr-chat".
 - **Uninstall:** the same command with `--uninstall`. It puts back exactly
   what install changed.
 - **Options:** `--no-subagents` (no sub-agent templates or notes),
-  `--no-layout` (leave your layout alone). The full list of what install
+  `--no-layout` (leave your layout alone; per-agent new-chat keys aren't bound,
+  so open GJC chats from the ⌘I launcher). The full list of what install
   changes is in [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 
 ## Quick start
@@ -135,7 +136,9 @@ it; every key is optional):
 
 `env` is for every agent. Per agent: `command` (instead of the one install
 found), `args` (added to the agent's), `env`, and `tui` (the program `/tui`
-runs). A new chat picks up a change. `updates.check: false` stops the daily
+runs). A new chat picks up a change. Chats run with the `PATH` install
+recorded (the agents' folders and, for a script like `gjc`, its interpreter's
+such as `bun`); a `PATH` in `env` replaces it. `updates.check: false` stops the daily
 look for a new release (a release install only); `updates.feed` points it at
 another URL with GitHub's release JSON.
 

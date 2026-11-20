@@ -17,8 +17,8 @@ async function readJson(path) {
 export const settingsPath = () => `${stateDir()}/settings.json`;
 
 /**
- * What install wrote (mods/chat/config.json: the host, node, hc and each agent
- * it found) with the person's settings over it. One agent's:
+ * What install wrote (mods/chat/config.json: the host, node, hc, PATH and each
+ * agent it found) with the person's settings over it. One agent's:
  * {command, args, env, tui}, `tui` an argv or null.
  */
 export async function readConfig() {
@@ -34,7 +34,7 @@ export async function readConfig() {
       tui: list(a.tui),
     };
   };
-  return { host: cfg.host ?? null, node: cfg.node ?? null, hc: cfg.hc ?? null, version: cfg.version ?? null, build: cfg.build ?? null, installedAt: cfg.installedAt ?? null, agent };
+  return { host: cfg.host ?? null, node: cfg.node ?? null, hc: cfg.hc ?? null, path: cfg.path ?? null, version: cfg.version ?? null, build: cfg.build ?? null, installedAt: cfg.installedAt ?? null, agent };
 }
 
 export async function readRegistry(chat) {
@@ -228,6 +228,7 @@ export class Connection {
       return;
     }
     const env = { ...agent.env, ...(this.o.hostEnv ?? {}) };
+    if (cfg.path != null && !("PATH" in env)) env.PATH = cfg.path;
     if (cfg.node) env.HERDR_CHAT_NODE = cfg.node;
     const session = this.o.session ?? entry?.sessionFile ?? null;
     const args = [

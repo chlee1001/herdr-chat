@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ROOT } from "./harness.ts";
@@ -171,7 +171,7 @@ test("keys: the default (⌘I opens the launcher), the older install's cmd-j shi
   assert.equal(g["cmd-i"], "mod.open:new-chat");
   assert.equal(g["cmd-j shift-p"], undefined, "the older install's binding is gone");
   assert.equal(g["cmd-j p"], "mod.open:open-pi", "Pi's TUI key stays");
-  assert.ok(!Object.values(g).some((v) => String(v).startsWith("new-chat.")), "pi, claude, codex unbound by default");
+  assert.ok(!Object.values(g).some((v) => String(v).startsWith("new-chat.")), "pi, claude, codex, gjc unbound by default");
   const once = readFileSync(join(h, "keys.json"), "utf8");
   keys("install", h);
   assert.equal(readFileSync(join(h, "keys.json"), "utf8"), once);
@@ -215,11 +215,15 @@ test("keys: the default ⌘I taken by something else falls back to ⌘J A, and s
 });
 
 test("keys: without the layout's new-chat copy (--no-direct) only the launcher key is bound; the others say why", () => {
-  const h = keysHome({ mine: { global: { pi: "cmd-j p" } } });
+  const h = keysHome({ mine: { global: { pi: "cmd-j p", gjc: "cmd-j g" } } });
   const out = keys("install", h, "--no-direct");
   assert.match(out, /Pi chat: ⌘J P not bound: it needs the layout's new-chat copy/);
+  assert.match(out, /GJC chat: ⌘J G not bound: it needs the layout's new-chat copy/);
   assert.equal(global(h)["cmd-j p"], "mod.open:open-pi");
+  assert.equal(global(h)["cmd-j g"], undefined);
   assert.equal(global(h)["cmd-i"], "mod.open:new-chat");
+  keys("install", h);
+  assert.equal(global(h)["cmd-j g"], "new-chat.gjc");
 });
 
 // --- the sub-agents note: install/instructions.ts ---------------------------------------
@@ -298,13 +302,17 @@ test("install.sh: --no-subagents writes no templates and no notes; a plain insta
   mkdirSync(join(d, "home", ".codex"), { recursive: true });
   writeFileSync(join(d, "home", ".codex", "AGENTS.md"), "codex rules\n");
   mkdirSync(join(d, "pi"));
-  // herdr-app as a newer Herdr (its --version; everything else the real one); the three agents as stubs on PATH.
+  // herdr-app as a newer Herdr (its --version; everything else the real one); agents as stubs on PATH.
   const bin = join(d, "bin");
   mkdirSync(bin);
   const realApp = execFileSync("sh", ["-c", "command -v herdr-app"], { encoding: "utf8" }).trim();
   const appAs = (v: string) => { const f = join(bin, `herdr-app-${v}`); writeFileSync(f, `#!/bin/sh\n[ "$1" = --version ] && { echo 'herdr-app ${v}'; exit 0; }\nexec '${realApp}' "$@"\n`, { mode: 0o755 }); return f; };
   for (const a of ["pi", "claude", "codex"]) writeFileSync(join(bin, a), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HERDR_APP_BIN: appAs("9.0.0"), HOME: join(d, "home"), HERDR_APP_HOME: app, XDG_CONFIG_HOME: join(d, "config"), PI_CODING_AGENT_DIR: join(d, "pi"), CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" };
+  writeFileSync(join(bin, "gjc"), "#!/usr/bin/env fakebun\n", { mode: 0o755 });
+  const interpreterBin = join(d, "interpreter-bin");
+  mkdirSync(interpreterBin);
+  writeFileSync(join(interpreterBin, "fakebun"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const env = { ...process.env, PATH: `${bin}:${interpreterBin}:${process.env.PATH}`, HERDR_APP_BIN: appAs("9.0.0"), HOME: join(d, "home"), HERDR_APP_HOME: app, XDG_CONFIG_HOME: join(d, "config"), PI_CODING_AGENT_DIR: join(d, "pi"), CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" };
   const sh = (...a: string[]) => {
     const r = spawnSync(join(ROOT, "install.sh"), a, { encoding: "utf8", env });
     assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -328,9 +336,14 @@ test("install.sh: --no-subagents writes no templates and no notes; a plain insta
 
   const out = sh();
   for (const p of ["pi", "claude", "codex"]) assert.ok(existsSync(join(tpl, `${p}-chat.md`)), `${p}-chat template`);
+  assert.ok(!existsSync(join(tpl, "gjc-chat.md")));
   // Each agent install found, by path (a core terminal lacks the login PATH).
   const cfg = JSON.parse(readFileSync(join(app, "mods", "chat", "config.json"), "utf8"));
-  for (const p of ["pi", "claude", "codex"]) assert.equal(cfg[p], join(bin, p));
+  for (const p of ["pi", "claude", "codex", "gjc"]) assert.equal(cfg[p], join(bin, p));
+  const dirs = cfg.path.split(":");
+  assert.ok(dirs.indexOf(bin) >= 0 && dirs.indexOf(bin) < dirs.indexOf(interpreterBin));
+  assert.ok(dirs.indexOf(interpreterBin) < dirs.indexOf("/usr/bin"));
+  assert.equal(new Set(dirs).size, dirs.length);
   assert.match(readFileSync(join(d, "pi", "AGENTS.md"), "utf8"), NOTE);
   assert.match(readFileSync(join(d, "home", ".codex", "AGENTS.md"), "utf8"), /^codex rules\n\n<!-- herdr-chat:subagents begin -->/);
   assert.match(out, /Claude Code: no .* \(not installed\)/);
@@ -348,6 +361,15 @@ test("install.sh: --no-subagents writes no templates and no notes; a plain insta
   assert.ok(!existsSync(join(d, "pi", "AGENTS.md")));
   assert.equal(readFileSync(join(d, "home", ".codex", "AGENTS.md"), "utf8"), "codex rules\n");
   assert.ok(!existsSync(join(tpl, "pi-chat.md")));
+
+  // Restrict PATH so an actual GJC installation cannot mask the missing-agent case.
+  unlinkSync(join(bin, "gjc"));
+  symlinkSync(process.execPath, join(bin, "node"));
+  symlinkSync(execFileSync("sh", ["-c", "command -v hc"], { encoding: "utf8" }).trim(), join(bin, "hc"));
+  const missing = spawnSync(join(ROOT, "install.sh"), ["--no-layout", "--no-subagents"], { encoding: "utf8", env: { ...env, PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin` } });
+  assert.equal(missing.status, 0, missing.stdout + missing.stderr);
+  const withoutGjc = JSON.parse(readFileSync(join(app, "mods", "chat", "config.json"), "utf8"));
+  assert.ok(!Object.hasOwn(withoutGjc, "gjc"));
 });
 
 // --- slots another plugin holds: install/layout.ts ----------------------------------------

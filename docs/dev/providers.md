@@ -86,9 +86,9 @@ What else differs, from each agent's own mechanism, not from the chat:
 ## Process (one host process per chat)
 
 - **Launcher:** ⌘I opens `new-chat`, which offers each agent install found.
-- The provider is a chat prop: `{chat, cwd, provider}`. The host gets it as `serve --provider pi|claude|codex`.
+- The provider is a chat prop: `{chat, cwd, provider}`. The host gets it as `serve --provider pi|claude|codex|gjc`.
 - The registry records it, so reopening uses the same provider.
-- The Herdr agent status (OSC 7501) reports `app=pi|claude|codex`, so Herdr shows the right icon.
+- The Herdr agent status (OSC 7501) reports `app=pi|claude|codex|gjc`, so Herdr shows the right icon.
 
 ## Adding an agent
 

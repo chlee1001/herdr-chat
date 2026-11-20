@@ -14,7 +14,7 @@
 // exactly what it was (the block's `props.replaces`, the record's menuWas).
 // It also adds an empty floating block, a copy of new-chat that is always on
 // screen at no size (as herdr-nvim's controller): `<mod>.<command>` reaches
-// only shown copies, so it is what takes new-chat.open|pi|claude|codex (the
+// only shown copies, so it is what takes new-chat.open|pi|claude|codex|gjc (the
 // keys) and new-chat.continue:<terminal> (chat-menu's Continue as chat).
 //
 //   node install/layout.ts install <app home> [--app <herdr-app>] [--no-agents] [--no-menu] [--no-commands]

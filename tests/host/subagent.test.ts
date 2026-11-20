@@ -9,10 +9,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { ChatClient } from "../../host/client.ts";
 import { readRegistry } from "../../host/registry.ts";
+import { parseArgs } from "../../host/args.ts";
+import { chatConfig } from "../../host/settings.ts";
+import { planSubagent } from "../../host/subagent.ts";
 import { FAKE_PI, ROOT, SCENARIOS, plain, sleep } from "./harness.ts";
 
 const LAUNCHER = join(ROOT, "bin", "herdr-chat-subagent");
@@ -34,7 +37,7 @@ function launch(name: string, opts: { args?: string[]; env?: Record<string, stri
   mkdirSync(hcDir, { recursive: true });
   // What install.sh writes, and the person's settings (test plumbing in "env", as the e2e's).
   writeFileSync(join(app, "mods", "chat", "config.json"), JSON.stringify({
-    host: join(ROOT, "bin", "herdr-chat-host"), node: process.execPath, hc: FAKE_HC, pi: FAKE_PI,
+    host: join(ROOT, "bin", "herdr-chat-host"), node: process.execPath, hc: FAKE_HC, pi: FAKE_PI, path: `${dirname(process.execPath)}:/usr/bin:/bin`,
   }));
   mkdirSync(join(app, "data", "herdr-chat"), { recursive: true });
   writeFileSync(join(app, "data", "herdr-chat", "settings.json"), JSON.stringify({
@@ -110,6 +113,7 @@ test("a template launch of herdr-chat-subagent: own labels, the app's state dir,
     assert.ok(at("--session-dir") >= 0 && at("--model") > at("--session-dir"), `argv ${argv.join(" ")}`);
     assert.equal(argv[at("--model") + 1], "fake/sub-model");
     assert.equal(start.env.HC_TERMINAL_ID, "t99");
+    assert.equal(start.path, `${dirname(process.execPath)}:/usr/bin:/bin`, "config.json's PATH (a core terminal lacks the login PATH)");
 
     // hc read: the header, the hint, the prompt and the answer.
     const lines = h.transcript.split("\n");
@@ -154,6 +158,13 @@ test("a template launch of herdr-chat-subagent: own labels, the app's state dir,
   } finally {
     h.stop();
   }
+});
+
+test("a sub-agent host's PATH: install's recorded one, a PATH in the person's settings env instead, never the core terminal's own", () => {
+  const plan = (mine: Record<string, unknown>) => planSubagent({ args: parseArgs(["run", "--provider", "gjc"]), env: { PATH: "/usr/bin:/bin" }, cwd: "/tmp", home: "/home/x", config: chatConfig({ gjc: "/opt/bun/bin/gjc", path: "/opt/bun/bin:/usr/bin:/bin" }, mine), chat: "c-00000000" });
+  assert.equal(plan({}).env.PATH, "/opt/bun/bin:/usr/bin:/bin");
+  assert.equal(plan({ env: { PATH: "/mine/bin" } }).env.PATH, "/mine/bin");
+  assert.equal(plan({ gjc: { env: { PATH: "/gjc-only/bin" } } }).env.PATH, "/gjc-only/bin");
 });
 
 test("herdr-chat-subagent: a failed self-label is a warning on the transcript, the host still serves; --chat is refused", async () => {

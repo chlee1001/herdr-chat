@@ -318,8 +318,10 @@ install_mods() {
     mkdir -p "$STATE"
     python3 - "$HERDR_APP_HOME/mods/chat/config.json" "$STATE/settings.json" "$REPO/bin/herdr-chat-host" "$NODE" "$extra" "$(command -v hc)" <<'EOF'
 import json, sys
+import os
 path, settings, host, node, extra, hc = sys.argv[1:]
-json.dump({"host": host, "node": node, "hc": hc}, open(path, "w"), indent=1)
+# path: the PATH install records for agents and the update terminal (this run's, its guards first).
+json.dump({"host": host, "node": node, "hc": hc, "path": os.environ["PATH"]}, open(path, "w"), indent=1)
 json.dump(json.loads(extra), open(settings, "w"), indent=1)
 EOF
   fi
