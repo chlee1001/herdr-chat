@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/chlee1001/herdr-chat/compare/v0.4.0...v0.5.0) (2026-11-22)
+
+
+### Features
+
+* **chat:** /resume lists every session, for every agent, with This folder / All folders ([#25](https://github.com/chlee1001/herdr-chat/issues/25)) ([478786b](https://github.com/chlee1001/herdr-chat/commit/478786be5264d7a37c09fb94f6a9225904c1a8a2))
+* **chat:** offer GJC in the launcher and install it ([#3](https://github.com/chlee1001/herdr-chat/issues/3)) ([421e0c3](https://github.com/chlee1001/herdr-chat/commit/421e0c3c7cadad53a1faa16982125bc4cc2b0076))
+* **chat:** the model picker has a tab per model provider, so two logins of one service are two tabs ([#26](https://github.com/chlee1001/herdr-chat/issues/26)) ([e44a0ef](https://github.com/chlee1001/herdr-chat/commit/e44a0ef900dd25315369fa4a45654141dbb053f9))
+* **providers:** add an ACP adapter and GJC as its first agent ([#2](https://github.com/chlee1001/herdr-chat/issues/2)) ([e63d315](https://github.com/chlee1001/herdr-chat/commit/e63d31598026c00f8ed82952356695824f63a8af))
+* **providers:** GJC models, modes, commands and sessions ([#5](https://github.com/chlee1001/herdr-chat/issues/5)) ([f2054d7](https://github.com/chlee1001/herdr-chat/commit/f2054d768028acb40b28fa2509883d8b2257930e))
+* **providers:** hand a GJC chat to its TUI and back ([#6](https://github.com/chlee1001/herdr-chat/issues/6)) ([aa7eca9](https://github.com/chlee1001/herdr-chat/commit/aa7eca9a56ca6bf3f7511cdc7f9d185f7ccf92ab))
+* **providers:** steer a running GJC turn ([#4](https://github.com/chlee1001/herdr-chat/issues/4)) ([53362c3](https://github.com/chlee1001/herdr-chat/commit/53362c3e2429cecadae85093108598b4ce735c21))
+
 ## [0.4.0](https://github.com/ChmaraX/herdr-chat/compare/v0.3.0...v0.4.0) (2026-11-15)
 
 
