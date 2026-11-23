@@ -42,28 +42,31 @@ async function setup(scenario: Record<string, unknown>, { gjc = true, session = 
 const last = <T extends NormalizedEvent["type"]>(events: NormalizedEvent[], type: T) => events.filter((e): e is Extract<NormalizedEvent, { type: T }> => e.type === type).at(-1);
 async function wait(check: () => boolean, timeout = 3000) { const until = Date.now() + timeout; while (!check()) { if (Date.now() > until) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 10)); } }
 
-test("configOptions become the model, thinking levels and modes; changes go through session/set_config_option and session/set_mode", async () => {
+test("GJC settings use config options and SDK permission modes", async () => {
   const t = await setup({ configOptions: CONFIG, modes: MODES });
   try {
     assert.deepEqual(last(t.events, "model")?.model, { provider: "gjc", id: "light-mix", name: "Light Mix", reasoning: true, contextWindow: null, input: ["text"] });
     assert.equal(last(t.events, "thinking")?.level, "medium");
     assert.equal(last(t.events, "permission_mode")?.mode, "default");
     assert.deepEqual(t.adapter.capabilities.thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
-    assert.deepEqual(t.adapter.capabilities.permissionModes, [{ id: "default", label: "Default" }, { id: "plan", label: "Plan" }]);
+    assert.deepEqual(t.adapter.capabilities.permissionModes, [{ id: "default", label: "Default", description: "Asks before each tool call" }, { id: "auto", label: "Auto-approve", description: "Runs tools without asking" }]);
     assert.equal(t.adapter.capabilities.fork, false);
     assert.equal(t.adapter.forkPoints, undefined);
     assert.deepEqual((await t.adapter.listModels()).map((m) => `${m.provider}/${m.id} ${m.name}`), ["gjc/light-mix Light Mix", "gjc/claude-opus Claude Opus"]);
 
     await t.adapter.setModel("gjc", "claude-opus");
     await t.adapter.setThinking("high");
-    await t.adapter.setPermissionMode("plan");
+    await t.adapter.setPermissionMode("auto");
     const sets = t.log().filter((m) => m.method === "session/set_config_option").map((m) => [m.params.configId, m.params.value]);
     assert.deepEqual(sets, [["model", "claude-opus"], ["thinking", "high"]]);
-    assert.deepEqual(t.log().filter((m) => m.method === "session/set_mode").map((m) => m.params.modeId), ["plan"]);
+    assert.deepEqual(t.log().filter((m) => m.params.operation === "permission_mode.set").map((m) => m.params.input.mode), ["allow"]);
     assert.equal(last(t.events, "model")?.model.id, "claude-opus");
     assert.equal(last(t.events, "model")?.model.name, "Claude Opus");
     assert.equal(last(t.events, "thinking")?.level, "high");
-    assert.equal(last(t.events, "permission_mode")?.mode, "plan");
+    assert.equal(last(t.events, "permission_mode")?.mode, "auto");
+    await t.adapter.setPermissionMode("default");
+    assert.equal(last(t.events, "permission_mode")?.mode, "default");
+    assert.deepEqual(t.log().filter((m) => m.params.operation === "permission_mode.set").map((m) => m.params.input.mode), ["allow", "prompt"]);
     // The answer and the config_option_update that came with it report the model once.
     assert.equal(t.events.filter((e) => e.type === "model" && e.model.id === "claude-opus").length, 1);
     await assert.rejects(t.adapter.setThinking("extreme"), /no thinking level "extreme"/);
@@ -82,14 +85,14 @@ test("the set_config_option answer alone updates the settings (no config_option_
 });
 
 test("a refused change shows the setting the agent still has, with one notice", async () => {
-  const t = await setup({ configOptions: CONFIG, modes: MODES, refuse: ["model", "plan"] });
+  const t = await setup({ configOptions: CONFIG, modes: MODES, refuse: ["model"], refusePermissionMode: true });
   try {
     const before = t.events.filter((e) => e.type === "model").length;
     await assert.rejects(t.adapter.setModel("gjc", "claude-opus"), /Unsupported model: claude-opus/);
     assert.equal(t.events.filter((e) => e.type === "model").length, before + 1);
     assert.equal(last(t.events, "model")?.model.id, "light-mix");
     assert.equal(t.events.filter((e) => e.type === "notice" && e.text.includes("didn't change the model")).length, 1);
-    await assert.rejects(t.adapter.setPermissionMode("plan"), /plan is not available/);
+    await assert.rejects(t.adapter.setPermissionMode("auto"), /invalid_state: mode refused/);
     assert.equal(last(t.events, "permission_mode")?.mode, "default");
     assert.equal(t.events.filter((e) => e.type === "notice" && e.text.includes("didn't change the mode:")).length, 1);
   } finally { await t.close(); }
@@ -258,11 +261,13 @@ test("a setting answered after the session changed doesn't show on the new sessi
 test("a message waiting on a failing change goes to the session the chat is still on", async () => {
   const t = await setup({ mode: "basic" });
   try {
+    await t.adapter.setPermissionMode("auto");
     const first = last(t.events, "session")!.id;
     const bad = join(t.dir, "x_00000000-0000-4000-8000-00000000dead.jsonl");
     const change = t.adapter.switchSession(bad);
     const sent = t.adapter.prompt({ id: "m", text: "waits", images: [], mode: "auto", busy: false });
     await assert.rejects(change);
+    assert.equal(last(t.events, "permission_mode")?.mode, "auto");
     await sent;
     assert.deepEqual(t.log().filter((m) => m.method === "session/prompt").map((m) => [m.params.sessionId, m.params.prompt[0].text]), [[first, "waits"]]);
     assert.equal(t.events.filter((e) => e.type === "run_settled").length, 1);
@@ -343,6 +348,10 @@ test("usage: context from the last usage_update, cost from usage.get (FINDINGS f
 test("a GJC without SDK methods (-32601) turns compaction and renaming off with a notice", async () => {
   const t = await setup({ sdk: "method_not_found" });
   try {
+    await assert.rejects(t.adapter.setPermissionMode("auto"), /method_not_found/);
+    assert.equal(last(t.events, "permission_mode")?.mode, "default");
+    assert.ok(t.events.some((e) => e.type === "notice" && e.text.includes("GJC didn't change the mode: method_not_found")));
+    assert.equal(t.adapter.capabilities.permissionModes.length, 2);
     await assert.rejects(t.adapter.compact(), /method_not_found/);
     assert.equal(t.adapter.capabilities.compact, false);
     assert.ok(t.events.some((e) => e.type === "capabilities" && e.capabilities.compact === false));
@@ -371,7 +380,7 @@ test("real host: chips, / menu, /compact, /name, /resume and no /fork", async ()
   try {
     const c = host.client;
     await c.waitFor((x) => x.state.model?.id === "light-mix" && x.state.thinking === "medium" && x.state.permissionMode === "default", 5000);
-    assert.deepEqual(c.state.capabilities.permissionModes.map((m: { label: string }) => m.label), ["Default", "Plan"]);
+    assert.deepEqual(c.state.capabilities.permissionModes.map((m: { label: string }) => m.label), ["Default", "Auto-approve"]);
     await c.waitFor((x) => x.state.commands.some((cmd: { name: string; source: string }) => cmd.name === "skill:ralplan" && cmd.source === "skill"), 5000);
     const names = c.state.commands.map((cmd: { name: string }) => cmd.name);
     assert.ok(names.includes("compact") && names.includes("name") && names.includes("thinking"));
@@ -379,8 +388,8 @@ test("real host: chips, / menu, /compact, /name, /resume and no /fork", async ()
 
     await c.req("set_model", { provider: "gjc", modelId: "claude-opus" });
     await c.req("set_thinking", { level: "high" });
-    await c.req("set_permission_mode", { mode: "plan" });
-    await c.waitFor((x) => x.state.model?.id === "claude-opus" && x.state.thinking === "high" && x.state.permissionMode === "plan", 2000);
+    await c.req("set_permission_mode", { mode: "auto" });
+    await c.waitFor((x) => x.state.model?.id === "claude-opus" && x.state.thinking === "high" && x.state.permissionMode === "auto", 2000);
 
     await c.req("send", { text: "/compact" });
     await c.waitFor((x) => x.items.some((i: { kind: string; text?: string }) => i.kind === "notice" && i.text === "Compacted the conversation."), 5000);
@@ -392,7 +401,7 @@ test("real host: chips, / menu, /compact, /name, /resume and no /fork", async ()
     const first = c.state.sessionFile;
     await c.req("send", { text: "/new" });
     await c.waitFor((x) => x.state.sessionFile !== first && x.state.sessionFile, 5000);
-    await c.waitFor((x) => x.state.model?.id === "light-mix", 2000);
+    await c.waitFor((x) => x.state.model?.id === "light-mix" && x.state.permissionMode === "default", 2000);
     const { sessions } = await c.req("sessions", { scope: "cwd", refresh: true });
     assert.ok(sessions.some((s: { path: string }) => s.path === first), "this cwd's GJC session is listed");
     await c.req("switch_session", { path: first });
