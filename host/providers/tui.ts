@@ -81,7 +81,7 @@ export type TuiFound = { pid: number; group: TuiGroup | null };
  * foreground, from the process table: a terminal whose own command started the agent (`fish -ic 'claude --resume …;
  * exec fish -i'`). That's a shell without job control, so the shell is the foreground and the agent runs below it,
  * in the terminal's foreground process group. One in another group is a background or stopped job, not the TUI on
- * screen. An agent under another match (a launcher running the real one) is that one. Two (`pi & pi`) is ambiguous:
+ * screen, unless it is the foreground group of its own terminal (the shell runs under a PTY proxy). An agent under another match (a launcher running the real one) is that one. Two (`pi & pi`) is ambiguous:
  * this throws rather than guess, since the caller signals the pid. `label`: the agent's name for messages ("Pi").
  * `processes`: the process table, read only when Herdr's argv doesn't tell.
  */
@@ -98,7 +98,7 @@ export function tuiProcess(o: { terminal: TerminalView; command: string; label: 
   const found: Proc[] = [];
   // The whole tree under the foreground (the table is in memory): a cap could hide a second agent.
   walk(kids, top.pid, (c) => {
-    if (c.pgid !== group || !runsAgent(c, command)) return true;
+    if (!(c.pgid === group || (c.tpgid > 0 && c.pgid === c.tpgid)) || !runsAgent(c, command)) return true;
     found.push(c);
     return false;
   });
@@ -107,8 +107,12 @@ export function tuiProcess(o: { terminal: TerminalView; command: string; label: 
   if (!agent) throw new Error(`no ${label} process in the terminal (its foreground is ${terminal.foreground.argv[0] ?? top.program}, and none runs under it)`);
   const tree = new Set([agent.pid]);
   walk(kids, agent.pid, (c) => (tree.add(c.pid), true));
-  const before = table.filter((p) => p.pgid === group && p.pid !== top.pid && !tree.has(p.pid)).map((p) => p.pid);
-  return { pid: agent.pid, group: { id: group, shell: top.pid, before } };
+  // Under a PTY proxy (a wrapper that owns the outer terminal and runs the shell on its own), the agent's group is the
+  // foreground one of the shell's terminal, not the wrapper's: the group and its shell are the agent's own.
+  const id = agent.pgid === group ? group : agent.pgid;
+  const shell = agent.pgid === group ? top.pid : agent.ppid;
+  const before = table.filter((p) => p.pgid === id && p.pid !== shell && !tree.has(p.pid)).map((p) => p.pid);
+  return { pid: agent.pid, group: { id, shell, before } };
 }
 
 /**

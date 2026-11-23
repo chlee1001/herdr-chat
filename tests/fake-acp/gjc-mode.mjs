@@ -79,6 +79,10 @@ export function createMode({ scenario, update, permission }) {
     async extMethod(method, params) {
       const answer = scenario.steer ?? (kind === "steer" ? "accepted" : "turn_not_active");
       if (scenario.sdk === "method_not_found" || !["_gjc/sdk/control", "_gjc/sdk/query"].includes(method)) throw RequestError.methodNotFound(method);
+      if (params.operation === "permission_mode.set") {
+        if (scenario.refusePermissionMode) return { ok: false, error: { code: "invalid_state", message: "mode refused" } };
+        return { changed: true, mode: params.input.mode };
+      }
       if (method === "_gjc/sdk/query" && params.query === "usage.get") {
         if (scenario.usage === "unknown_operation") return { type: "query_response", ok: false, error: { code: "unknown_operation", message: "Unknown SDK query: usage.get" } };
         return { type: "query_response", ok: true, page: { items: [{ input: 16099, output: 5, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0.0016124 }], complete: true, revision: "1" } };

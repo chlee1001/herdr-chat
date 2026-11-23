@@ -1777,6 +1777,11 @@ export default class HerdrChat extends View {
           if (!d?.argv?.length) throw new Error("this chat has no session yet");
           argv = prog ? withProgram(d.argv, prog) : [...d.argv];
         } else argv = prog ? withProgram(utilityArgv, prog) : [...utilityArgv];
+        // The PATH install recorded (a script agent's interpreter, as `bun` for gjc): a core terminal's own PATH lacks it,
+        // and the agent would exit 127 at once. A PATH the person's settings set, or an `env PATH=…` the adapter put, wins.
+        const agentEnv = cfg.agent(this.providerId()).env;
+        const pathEnv = cfg.path && !("PATH" in agentEnv) && !argv.some((a) => a.startsWith("PATH=")) ? [`PATH=${cfg.path}`] : [];
+        if (pathEnv.length) argv = /(^|\/)env$/.test(argv[0] ?? "") ? [argv[0], ...pathEnv, ...argv.slice(1)] : ["env", ...pathEnv, ...argv];
         // No herdr.space/tab labels: no pane, so the layout and the chat's tab stay as they are.
         const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", `chat-tui-${this.chat}`, "--cwd", this.cwd ?? this.store.state.cwd ?? "/",
           "--label", `herdr-chat.tui=${this.chat}`, "--", ...argv]);

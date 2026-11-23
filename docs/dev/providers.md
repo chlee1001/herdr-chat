@@ -171,9 +171,10 @@ for the run's end. A GJC without `_gjc/sdk/control` or `turn.steer` turns
 steering off for the session.
 
 The model chip lists GJC's model presets and the thinking chip its levels
-(its `configOptions`); the mode chip shows Default and Plan, but GJC 0.21 refuses
-Plan over ACP (no plan-mode lifecycle there), so choosing it leaves Default with
-a notice. GJC's skills (`skill:<name>` commands) are in the `/` menu as skills.
+(its `configOptions`); the mode chip offers Default (asks before each tool call)
+and Auto-approve (runs tools without asking). The SDK `permission_mode.set` maps
+these to `prompt` and `allow`, respectively; each session starts in Default.
+GJC's skills (`skill:<name>` commands) are in the `/` menu as skills.
 /resume lists GJC's sessions by their session files. `/compact` runs
 `compaction.run` (no instructions); GJC's own compaction, reported in
 `session_info_update._meta.gjcCompactionState`, shows as compaction notices.
@@ -201,7 +202,7 @@ sent no prompt, so it wrote no session file.)
 |---|---|
 | steer / follow-up | `turn.steer` (text only) / adapter queue |
 | permissions | agent approval choices |
-| model presets, thinking, modes | `configOptions`, `session/set_config_option`, `session/set_mode` (Plan refused by GJC 0.21) |
+| model presets, thinking, modes | `configOptions`, `session/set_config_option`, SDK `permission_mode.set` (`prompt` or `allow`) |
 | commands | `available_commands_update` (skills as `skill:<name>`) |
 | sessions | `session/list`, `session/load`, `session/new`, `session/close`; no fork |
 | compaction, rename, cost | `compaction.run`, `session.rename`, `usage.get` |

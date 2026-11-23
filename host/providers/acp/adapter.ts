@@ -66,6 +66,8 @@ export class AcpAdapter implements ProviderAdapter {
   /** The session's settings: its `configOptions` (model, thought_level, mode) and its modes. */
   private config: SessionConfigOption[] = [];
   private modes: SessionModeState | null = null;
+  protected permissionModeOverride?: { modes: PermissionMode[]; initial: string; set: (conn: AcpConnection, sessionId: string, mode: string) => Promise<void> };
+  private overrideMode: string | null = null;
   /** The settings last reported to the host, so an unchanged update says nothing. */
   private shown: { model?: string; thinking?: string; mode?: string | null } = {};
   /** The session's `available_commands_update` (null: none yet). */
@@ -193,6 +195,7 @@ export class AcpAdapter implements ProviderAdapter {
   /** Forgets the session's settings, commands and usage (a new one reports its own). */
   private forgetSession(): void {
     this.config = []; this.modes = null; this.shown = {}; this.agentCommands = null; this.lastUsage = null;
+    this.overrideMode = this.permissionModeOverride?.initial ?? null;
   }
   protected onUpdate(update: SessionUpdate): void {
     if (!this.replay) this.emit({ type: "heartbeat" });
@@ -397,6 +400,7 @@ export class AcpAdapter implements ProviderAdapter {
     return this.config.find((o): o is SelectOption => o.category === category && o.type === "select");
   }
   private permissionModes(): PermissionMode[] {
+    if (this.permissionModeOverride) return this.permissionModeOverride.modes;
     const list = this.modes?.availableModes.map((m) => ({ id: m.id, name: m.name, description: m.description })) ?? choices(this.option("mode")).map((c) => ({ id: c.value, name: c.name, description: c.description }));
     return list.map((m) => ({ id: m.id, label: m.name, ...(m.description ? { description: m.description } : {}) }));
   }
@@ -414,7 +418,7 @@ export class AcpAdapter implements ProviderAdapter {
       this.live({ type: "model", model: { provider: this.id, id: model.currentValue, name, reasoning: Boolean(thought), contextWindow: this.lastUsage?.size ?? null, input: this.capabilities.images ? ["text", "image"] : ["text"] } });
     }
     if (thought && thought.currentValue !== this.shown.thinking) { this.shown.thinking = thought.currentValue; this.live({ type: "thinking", level: thought.currentValue }); }
-    const mode = this.modes?.currentModeId ?? this.option("mode")?.currentValue ?? null;
+    const mode = this.permissionModeOverride ? this.overrideMode : this.modes?.currentModeId ?? this.option("mode")?.currentValue ?? null;
     if (mode !== (this.shown.mode ?? null)) { this.shown.mode = mode; this.live({ type: "permission_mode", mode }); }
   }
   /** Settings are the live chat's, also while a replay is read. */
@@ -449,6 +453,14 @@ export class AcpAdapter implements ProviderAdapter {
   async setThinking(level: string): Promise<void> { await this.setOption("thought_level", level, "thinking level"); }
   async setPermissionMode(mode: string): Promise<void> {
     await this.switching;
+    if (this.permissionModeOverride) {
+      if (!this.permissionModeOverride.modes.some((m) => m.id === mode)) throw new Error(`${this.name} has no mode "${mode}"`);
+      const { conn, sessionId } = this.session();
+      const epoch = this.epoch;
+      try { await this.permissionModeOverride.set(conn, sessionId, mode); } catch (error) { this.refused("mode", error, epoch); }
+      if (this.epoch === epoch) { this.overrideMode = mode; this.showSettings(); }
+      return;
+    }
     if (!this.modes) return this.setOption("mode", mode, "mode");
     if (!this.modes.availableModes.some((m) => m.id === mode)) throw new Error(`${this.name} has no mode "${mode}"`);
     const { conn, sessionId } = this.session();
@@ -511,14 +523,14 @@ export class AcpAdapter implements ProviderAdapter {
     const { conn, sessionId: previous } = this.session();
     await this.stopRun(conn, previous);
     this.epoch++;
-    const settings = { config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage };
+    const settings = { config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage, overrideMode: this.overrideMode };
     this.forgetSession(); this.sessionChanging();
     this.changing = true;
     try {
       if (id) { await this.untilClosed(id); await this.load(conn, id); } else await this.create(conn);
     } catch (error) {
       // `sessionId` is still the old one: load and create set it only once the agent answered.
-      ({ config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage } = settings);
+      ({ config: this.config, modes: this.modes, shown: this.shown, commands: this.agentCommands, usage: this.lastUsage, overrideMode: this.overrideMode } = settings);
       this.changing = false; // the old session is the chat's again
       this.sessionOpened();
       await this.sessionRef(previous).catch(() => null);

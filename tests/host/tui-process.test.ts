@@ -168,3 +168,16 @@ test("tui-busy: once the agent is gone, what its terminal's command went on to r
   // A group that isn't one: refused before it reads anything.
   assert.match(busy("bad group", { id: -1, shell: 1, before: [] }).error ?? "", /tui-busy needs --group/);
 });
+
+test("tui-session --terminal: the agent in the foreground group of a shell under a PTY proxy", async (t) => {
+  t.after(cleanup);
+  // The terminal's top process (script, here) owns the outer terminal; its shell runs the agent in a job of its own
+  // that is the pty's foreground group: not the top's group, yet the TUI on screen.
+  const s = `script -q /dev/null /bin/sh -c ${q(`set -m; ${node} ${q(idle)}`)}`;
+  const fg = await terminal(s, 1);
+  const r = ask("pty proxy", fg.sh, s);
+  assert.equal(r.ok?.pid, recorded(fg.pids)[0], r.error);
+  assert.match(comm(r.ok.pid), /node$/);
+  assert.notEqual(r.ok.group.id, fg.sh);
+  assert.notEqual(r.ok.group.shell, fg.sh);
+});

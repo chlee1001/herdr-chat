@@ -39,6 +39,14 @@ export class GjcAdapter extends AcpAdapter {
 
   constructor(opts: AdapterOptions) {
     super({ id: "gjc", name: "GJC", command: opts.command, args: ["--mode", "acp"], env: {}, clientMeta: { gjc: { permissionHandling: "prompt" } }, minimumVersion: "0.21.0" }, opts);
+    this.permissionModeOverride = {
+      modes: [{ id: "default", label: "Default", description: "Asks before each tool call" }, { id: "auto", label: "Auto-approve", description: "Runs tools without asking" }],
+      initial: "default",
+      set: async (conn, sessionId, mode) => {
+        const answer = await control(conn.agent, sessionId, "permission_mode.set", { mode: mode === "auto" ? "allow" : "prompt" });
+        if (!answer.ok) throw new Error(`${answer.code}: ${answer.message}`);
+      },
+    };
     this.capabilities.tui = true;
     this.capabilities.compact = true; this.capabilities.rename = true;
   }
